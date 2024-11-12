@@ -1,18 +1,22 @@
 # OpenShift Enumeration
 
-This repository contains 2 scripts, EnumAbsentObject.py is used to detect absent service accounts that could represent a vulnerability and OpenShiftGrapher.py that is used to enumerate more largely the cluster.  
+OpenShiftGrapher is used to enumerate OpenShift clusters.  
 
 ## OpenShiftGrapher
 
 ### What it is
 
 The script is mean to create relational databases, in neo4j, of an OpenShift cluster.  
-It extracts objects as and relationships for common information like projects, service accounts, scc and others.  
-The query system can then be used to spot inconsistency in the database, that could lead to vulnerabilities.
+It extracts objects and relationships for information like projects, service accounts, scc and others.  
+The neo4j query system can then be used to spot inconsistency in the database that could lead to vulnerabilities.
 
 ![alt text](https://github.com/maxDcb/OpenShiftGrapher/blob/master/media/general.png?raw=true)
 
 ### Installation
+
+```
+pip install GenClusterGraph
+```
 
 The script needs to communicate with the neo4j database, and the OpenShift cluster in python:  
 
@@ -25,18 +29,18 @@ To install the neo4j database we recommend to install neo4j desktop, which conta
 
 https://neo4j.com/download/  
 
-### Setup
+### Usage
 
 Then script can be launched with the following command:  
 
 ```bash
-python3 OpenShiftGrapher.py -h
+OpenShiftGrapher -h
 usage: OpenShiftGrapher.py [-h] [-r] -a APIURL -t TOKEN [-c COLLECTOR [COLLECTOR ...]] [-u USERNEO4J] [-p PASSWORDNEO4J]
 
 Exemple:
-    python3 GenClusterGraph.py -a "https://api.cluster.net:6443" -t "eyJhbGciOi..."
-    python3 GenClusterGraph.py -a "https://api.cluster.net:6443" -t $(cat token.txt)
-    python3 GenClusterGraph.py -a "https://api.cluster.net:6443" -t $(cat token.txt) -c scc role route
+    GenClusterGraph -a "https://api.cluster.net:6443" -t "eyJhbGciOi..."
+    GenClusterGraph -a "https://api.cluster.net:6443" -t $(cat token.txt)
+    GenClusterGraph -a "https://api.cluster.net:6443" -t $(cat token.txt) -c scc role route
 
 options:
   -h, --help            show this help message and exit
@@ -54,12 +58,11 @@ options:
 ```
 
 ```bash
-python3 OpenShiftGrapher.py -a "https://api.cluster.net:6443" -t $(cat quota.token) -c all
+OpenShiftGrapher -a "https://api.cluster.net:6443" -t $(cat quota.token) -c all
 ```
 
 ### Exemples of Queries
 
-Those queries are not up to date with the last version of the tool
 
 ```
 MATCH (n:AbsentServiceAccount {name:"servicenow-sa"}) RETURN n LIMIT 25  
@@ -133,38 +136,4 @@ MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[]->()-[r1:`CAN 
 
 ```
 MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[r1:`HAS CLUSTERROLE`]->() RETURN p LIMIT 25  
-```
-
-## EnumAbsentObject
-
-For EnumAbsentObject.py their is no need to install the neo4j database and it can be used with the following dependency:  
-```
-pip install openshift  
-```
-
-```bash
-python3 EnumAbsentObject.py -h
-usage: EnumAbsentObject.py [-h] -a APIURL -t TOKEN
-
-Exemple:
-    python3 AbsentEnum.py -a "https://api.cluster.net:6443" -t "eyJhbGciOi..."
-    python3 AbsentEnum.py -a "https://api.cluster.net:6443" -t $(cat token.txt)
-
-options:
-  -h, --help            show this help message and exit
-  -a APIURL, --apiUrl APIURL
-                        api url.
-  -t TOKEN, --token TOKEN
-                        service account token.
-```
-
-```bash
-python3 EnumAbsentObject.py -a "https://api.cluster.net:6443" -t $(cat quota.token)
-```
-
-Output are the following:  
-
-```
-[o] serviceAccount related to ClusterRole: uniping-operator, don't exist: uniping:uniping-operator     			-> the uniping-operator SA is missing 
-[+] serviceAccount and project related to ClusterRole: uniping-operator, don't exist: uniping:uniping-operator 	-> the uniping-operator SA and the uniping project are missing 
 ```
