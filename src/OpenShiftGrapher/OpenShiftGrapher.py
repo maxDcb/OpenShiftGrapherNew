@@ -160,16 +160,16 @@ def main():
 
 
     ##
-    ## SSC
+    ## SCC
     ##
-    print("#### SSC ####")
+    print("#### SCC ####")
 
-    SSCs = dyn_client.resources.get(api_version='security.openshift.io/v1', kind='SecurityContextConstraints')
-    SSC_list = SSCs.get()
+    SCCs = dyn_client.resources.get(api_version='security.openshift.io/v1', kind='SecurityContextConstraints')
+    SCC_list = SCCs.get()
      
     if "all" in collector or "scc" in collector:
-        with Bar('SSC',max = len(SSC_list.items)) as bar:
-            for scc in SSC_list.items:
+        with Bar('SCC',max = len(SCC_list.items)) as bar:
+            for scc in SCC_list.items:
                 bar.next()
 
                 try:
@@ -293,21 +293,21 @@ def main():
                                             for resourceName in rule.resourceNames:
 
                                                 try:
-                                                    SSC_list = SSCs.get(name=resourceName)
-                                                    sscNode = Node("SCC", name=SSC_list.metadata.name, uid=SSC_list.metadata.uid)
-                                                    sscNode.__primarylabel__ = "SCC"
-                                                    sscNode.__primarykey__ = "uid"
+                                                    SCC_list = SCCs.get(name=resourceName)
+                                                    sccNode = Node("SCC", name=SCC_list.metadata.name, uid=SCC_list.metadata.uid)
+                                                    sccNode.__primarylabel__ = "SCC"
+                                                    sccNode.__primarykey__ = "uid"
                                                 except: 
                                                     uid = "SCC_"+resourceName
-                                                    sscNode = Node("AbsentSCC", name=resourceName, uid=uid)
-                                                    sscNode.__primarylabel__ = "AbsentSCC"
-                                                    sscNode.__primarykey__ = "uid"
+                                                    sccNode = Node("AbsentSCC", name=resourceName, uid=uid)
+                                                    sccNode.__primarylabel__ = "AbsentSCC"
+                                                    sccNode.__primarykey__ = "uid"
 
                                                 try:
                                                     tx = graph.begin()
-                                                    r1 = Relationship(roleNode, "CAN USE SCC", sscNode)
+                                                    r1 = Relationship(roleNode, "CAN USE SCC", sccNode)
                                                     node = tx.merge(roleNode) 
-                                                    node = tx.merge(sscNode) 
+                                                    node = tx.merge(sccNode) 
                                                     node = tx.merge(r1) 
                                                     graph.commit(tx)
 
@@ -430,21 +430,21 @@ def main():
                                             for resourceName in rule.resourceNames:
 
                                                 try:
-                                                    SSC_list = SSCs.get(name=resourceName)
-                                                    sscNode = Node("SCC", name=SSC_list.metadata.name, uid=SSC_list.metadata.uid)
-                                                    sscNode.__primarylabel__ = "SCC"
-                                                    sscNode.__primarykey__ = "uid"
+                                                    SCC_list = SCCs.get(name=resourceName)
+                                                    sccNode = Node("SCC", name=SCC_list.metadata.name, uid=SCC_list.metadata.uid)
+                                                    sccNode.__primarylabel__ = "SCC"
+                                                    sccNode.__primarykey__ = "uid"
                                                 except: 
                                                     uid = "SCC_"+resourceName
-                                                    sscNode = Node("AbsentSCC", name=resourceName, uid=uid)
-                                                    sscNode.__primarylabel__ = "AbsentSCC"
-                                                    sscNode.__primarykey__ = "uid"
+                                                    sccNode = Node("AbsentSCC", name=resourceName, uid=uid)
+                                                    sccNode.__primarylabel__ = "AbsentSCC"
+                                                    sccNode.__primarykey__ = "uid"
 
                                                 try:
                                                     tx = graph.begin()
-                                                    r1 = Relationship(roleNode, "CAN USE SCC", sscNode)
+                                                    r1 = Relationship(roleNode, "CAN USE SCC", sccNode)
                                                     node = tx.merge(roleNode) 
-                                                    node = tx.merge(sscNode) 
+                                                    node = tx.merge(sccNode) 
                                                     node = tx.merge(r1) 
                                                     graph.commit(tx)
 
@@ -630,7 +630,7 @@ def main():
             for enum in roleBinding_list.items:
                 bar.next()
 
-                # print(enum)
+                print(enum)
                 name = enum.metadata.name
                 uid = enum.metadata.uid
                 namespace = enum.metadata.namespace
