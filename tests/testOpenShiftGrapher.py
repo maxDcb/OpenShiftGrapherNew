@@ -9,13 +9,16 @@ from OpenShiftGrapher.OpenShiftGrapher import main
 from kubernetes.client import  *
 from openshift.dynamic import ResourceInstance
 
+from py2neo import Graph, Node
 
-class TestCli(unittest.TestCase):
+
+class OpenShiftGrapherTests(unittest.TestCase):
 
     @patch('sys.argv', ['OpenShiftGrapher','-a','https://cluster.api.net:6443', '-t', 'token', '-c', 'all'])
     @patch("OpenShiftGrapher.OpenShiftGrapher.DynamicClient")
+    @patch("OpenShiftGrapher.OpenShiftGrapher.Graph")
 
-    def test1(self, mock_dynamic_client):
+    def test1(self, mock_graph, mock_dynamic_client):
 
         # Create V1Namespace objects with metadata
         project1 = V1Namespace(
