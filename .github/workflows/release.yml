@@ -11,9 +11,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     environment: pypi
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
     - name: Checkout code
@@ -48,7 +45,12 @@ jobs:
     - name: Publish package to Test PyPI
       if: github.event_name == 'push'
       uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.TEST_PYPI_TOKEN }}
+        repository_url: https://test.pypi.org/legacy/
 
     - name: Publish package to PyPI
       if: github.event_name == 'release'
       uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.PYPI_TOKEN }}
