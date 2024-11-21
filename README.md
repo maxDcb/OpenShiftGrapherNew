@@ -23,6 +23,7 @@ The script needs to communicate with the neo4j database, and the OpenShift clust
 ```
 pip install py2neo  
 pip install openshift  
+pip install progress
 ```
 
 To install the neo4j database we recommend to install neo4j desktop, which contain the database and bloom for visualisation:  
@@ -128,12 +129,35 @@ It happens that cluster is deployed with preconfigured template automatically se
 
 ### Absent SA that can use SCC
 
+SCC can be given by role binding or directly:
+
 ```
-MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[]->()-[r1:`CAN USE SCC`]->() WHERE NOT (n1.name =~ ('openshift.*'))  RETURN p LIMIT 100 
+MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[]->()-[r1:`CAN USE SCC`]->()  RETURN p LIMIT 100 
+MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[r1:`CAN USE SCC`]->()  RETURN p LIMIT 100
 ```
 
 ### Absent SA that has cluster role
 
 ```
-MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[r1:`HAS CLUSTERROLE`]->() RETURN p LIMIT 25  
+MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[r1:`HAS CLUSTERROLE`]->() RETURN p LIMIT 100  
+MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[]->()-[r2:`HAS CLUSTERROLE`]->()-[r3:`get`]->(n4:Resource) WHERE (n4.name =~ ('secrets')) AND NOT (n1.name =~ ('openshift.*')) RETURN p LIMIT 200  
+```
+
+### Absent SA that has role binding in another namespace than their own
+
+```
+MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[r1:`HAS ROLEBINDING`]->(n3:RoleBinding)-[]->() WHERE NOT (n1.name =~ n3.namespace) RETURN p LIMIT 100   
+```
+
+### Absent SA that can bypass kyverno
+
+```
+MATCH p=(n1)-[]->(n2)-[r1:`CAN BYPASS KYVERNO`]->()  RETURN p LIMIT 100 
+MATCH p=(n1:AbsentProject)-[]->(n2:AbsentServiceAccount)-[r1:`CAN BYPASS KYVERNO`]->()  RETURN p LIMIT 100 
+```
+
+### Gatekeeper whitelist
+
+```
+MATCH p=(n1:GatekeeperWhitelist)  RETURN p LIMIT 100 
 ```

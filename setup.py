@@ -13,6 +13,7 @@ setup(
     install_requires=[
         "py2neo",
         "openshift",
+        "progress",
     ],
     entry_points={
         'console_scripts': [
