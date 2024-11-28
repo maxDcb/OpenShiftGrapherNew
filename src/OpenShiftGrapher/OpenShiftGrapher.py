@@ -36,6 +36,7 @@ def main():
     parser.add_argument('-c', '--collector', nargs="+", default=[], help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod ')
     parser.add_argument('-u', '--userNeo4j', default="neo4j", help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default="rootroot", help='neo4j database password.')
+    parser.add_argument('-x', '--proxyUrl', default="", help='proxy url.')
 
     args = parser.parse_args()
 
@@ -45,6 +46,7 @@ def main():
     userNeo4j = args.userNeo4j
     passwordNeo4j = args.passwordNeo4j
     collector = args.collector
+    proxyUrl = args.proxyUrl
 
     release = True
 
@@ -60,6 +62,12 @@ def main():
     kubeConfig.api_key = {"authorization": "Bearer {}".format(api_key)}
 
     k8s_client = client.ApiClient(kubeConfig)
+
+    if proxyUrl:
+        proxyManager = urllib3.ProxyManager(proxyUrl)
+        k8s_client.rest_client.pool_manager = proxyManager
+        # k8s_client.configuration.debug = True
+
     dyn_client = DynamicClient(k8s_client)
     v1 = client.CoreV1Api(k8s_client)
 
@@ -1216,7 +1224,7 @@ def main():
 
                     except Exception as e:
                         try:
-                            containerList = re.search('choose one of: \[(.+)\]', str(e), re.IGNORECASE).group(1)
+                            containerList = re.search(r'choose one of: [(.+)]', str(e), re.IGNORECASE).group(1)
                             containerList = containerList.split(" ")
                             for container in containerList:
                                 api_response = v1.read_namespaced_pod_log(name=name, namespace=namespace, container=container)
@@ -1227,7 +1235,7 @@ def main():
 
                     # TODO do the same with excludeGroups, excludeRoles, excludedClusterRoles
                     try:
-                        excludedUsernameList = re.search('excludeUsernames=\[(.+)\]', api_response, re.IGNORECASE).group(1)
+                        excludedUsernameList = re.search(r'excludeUsernames=[(.+)]', api_response, re.IGNORECASE).group(1)
                         excludedUsernameList = excludedUsernameList.split(",")
                     except Exception as t:
                         print("\n[-] error excludeUsernames: "+ str(t))  
