@@ -15,7 +15,7 @@ The neo4j query system can then be used to spot inconsistency in the database th
 ### Installation
 
 ```
-pip install GenClusterGraph
+pip install OpenShiftGrapher
 ```
 
 The script needs to communicate with the neo4j database, and the OpenShift cluster in python:  
@@ -56,6 +56,8 @@ options:
                         neo4j database user.
   -p PASSWORDNEO4J, --passwordNeo4j PASSWORDNEO4J
                         neo4j database password.
+  -x PROXYURL, --proxyUrl PROXYURL
+                        proxy url.
 ```
 
 ```bash
