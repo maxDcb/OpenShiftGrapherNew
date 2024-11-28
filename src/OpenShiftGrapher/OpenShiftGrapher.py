@@ -835,7 +835,7 @@ def main():
                 description = enum.metadata.description
 
                 clusterRolebindingNode = Node("ClusterRoleBinding", name=name, namespace=namespace, uid=uid)
-                clusterRolebindingNode.__primarylabel__ = "RoleBinding"
+                clusterRolebindingNode.__primarylabel__ = "ClusterRoleBinding"
                 clusterRolebindingNode.__primarykey__ = "uid"
 
                 roleKind = enum.roleRef.kind
