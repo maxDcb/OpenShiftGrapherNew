@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name="OpenShiftGrapher",
-    version="0.1",
+    version="0.2",
     packages=find_packages(where='src'),
     long_description=long_description,
     long_description_content_type="text/markdown",
