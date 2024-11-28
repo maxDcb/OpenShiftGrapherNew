@@ -18,13 +18,7 @@ The neo4j query system can then be used to spot inconsistency in the database th
 pip install OpenShiftGrapher
 ```
 
-The script needs to communicate with the neo4j database, and the OpenShift cluster in python:  
-
-```
-pip install py2neo  
-pip install openshift  
-pip install progress
-```
+The script needs to communicate with the neo4j database, and the OpenShift cluster in python.
 
 To install the neo4j database we recommend to install neo4j desktop, which contain the database and bloom for visualisation:  
 
