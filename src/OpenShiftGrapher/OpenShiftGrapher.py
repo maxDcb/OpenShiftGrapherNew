@@ -134,8 +134,7 @@ def main():
                         projectNode.__primarykey__ = "uid"
 
                     except: 
-                        uid = enum.metadata.namespace
-                        projectNode = Node("AbsentProject", name=enum.metadata.namespace, uid=uid)
+                        projectNode = Node("AbsentProject", name=enum.metadata.namespace, uid=enum.metadata.namespace)
                         projectNode.__primarylabel__ = "AbsentProject"
                         projectNode.__primarykey__ = "uid"
 
@@ -210,8 +209,7 @@ def main():
                                         projectNode.__primarykey__ = "uid"
 
                                     except: 
-                                        uid = subjectNamespace
-                                        projectNode = Node("AbsentProject", name=subjectNamespace, uid=uid)
+                                        projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                         projectNode.__primarylabel__ = "AbsentProject"
                                         projectNode.__primarykey__ = "uid"
 
@@ -222,8 +220,7 @@ def main():
                                         subjectNode.__primarykey__ = "uid"
 
                                     except: 
-                                        uid = subjectName+"_"+subjectNamespace
-                                        subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=uid)
+                                        subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                         subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
 
@@ -298,8 +295,7 @@ def main():
                                                     sccNode.__primarylabel__ = "SCC"
                                                     sccNode.__primarykey__ = "uid"
                                                 except: 
-                                                    uid = "SCC_"+resourceName
-                                                    sccNode = Node("AbsentSCC", name=resourceName, uid=uid)
+                                                    sccNode = Node("AbsentSCC", name=resourceName, uid="SCC_"+resourceName)
                                                     sccNode.__primarylabel__ = "AbsentSCC"
                                                     sccNode.__primarykey__ = "uid"
 
@@ -332,8 +328,7 @@ def main():
                                                 resourceName = ":"
                                                 resourceName = resource
 
-                                            uid="Resource_"+role.metadata.namespace+"_"+resourceName
-                                            ressourceNode = Node("Resource", name=resourceName, uid=uid)
+                                            ressourceNode = Node("Resource", name=resourceName, uid="Resource_"+role.metadata.namespace+"_"+resourceName)
                                             ressourceNode.__primarylabel__ = "Resource"
                                             ressourceNode.__primarykey__ = "uid"
 
@@ -363,8 +358,7 @@ def main():
                             for nonResourceURL in rule.nonResourceURLs: 
                                 for verb in rule.verbs:
 
-                                    uid="ResourceNoUrl_"+role.metadata.namespace+"_"+nonResourceURL
-                                    ressourceNode = Node("ResourceNoUrl", name=nonResourceURL, uid=uid)
+                                    ressourceNode = Node("ResourceNoUrl", name=nonResourceURL, uid="ResourceNoUrl_"+role.metadata.namespace+"_"+nonResourceURL)
                                     ressourceNode.__primarylabel__ = "ResourceNoUrl"
                                     ressourceNode.__primarykey__ = "uid"
 
@@ -435,8 +429,7 @@ def main():
                                                     sccNode.__primarylabel__ = "SCC"
                                                     sccNode.__primarykey__ = "uid"
                                                 except: 
-                                                    uid = "SCC_"+resourceName
-                                                    sccNode = Node("AbsentSCC", name=resourceName, uid=uid)
+                                                    sccNode = Node("AbsentSCC", name=resourceName, uid="SCC_"+resourceName)
                                                     sccNode.__primarylabel__ = "AbsentSCC"
                                                     sccNode.__primarykey__ = "uid"
 
@@ -469,8 +462,7 @@ def main():
                                                 resourceName = ":"
                                                 resourceName = resource
 
-                                            uid="Resource_cluster"+"_"+resourceName
-                                            ressourceNode = Node("Resource", name=resourceName, uid=uid)
+                                            ressourceNode = Node("Resource", name=resourceName, uid="Resource_cluster"+"_"+resourceName)
                                             ressourceNode.__primarylabel__ = "Resource"
                                             ressourceNode.__primarykey__ = "uid"
 
@@ -500,8 +492,7 @@ def main():
                             for nonResourceURL in rule.nonResourceURLs: 
                                 for verb in rule.verbs:
 
-                                    uid="ResourceNoUrl_cluster"+"_"+nonResourceURL
-                                    ressourceNode = Node("ResourceNoUrl", name=nonResourceURL, uid=uid)
+                                    ressourceNode = Node("ResourceNoUrl", name=nonResourceURL, uid="ResourceNoUrl_cluster"+"_"+nonResourceURL)
                                     ressourceNode.__primarylabel__ = "ResourceNoUrl"
                                     ressourceNode.__primarykey__ = "uid"
 
@@ -574,13 +565,9 @@ def main():
             for enum in group_list.items:
                 bar.next()
 
-                name = enum.metadata.name
-                uid = enum.metadata.uid
-                userNames = enum.users
-
-                if userNames:
-                    for user in userNames:
-                        groupNode = Node("Group", name=name, uid=uid)
+                if enum.users:
+                    for user in enum.users:
+                        groupNode = Node("Group", name=enum.metadata.name, uid=enum.metadata.uid)
                         groupNode.__primarylabel__ = "Group"
                         groupNode.__primarykey__ = "uid"
 
@@ -591,8 +578,7 @@ def main():
                             userNode.__primarylabel__ = "User"
                             userNode.__primarykey__ = "uid"
                         except: 
-                            uid = user
-                            userNode = Node("AbsentUser", name=user, uid=uid)
+                            userNode = Node("AbsentUser", name=user, uid=user)
                             userNode.__primarylabel__ = "AbsentUser"
                             userNode.__primarykey__ = "uid"
                         
@@ -636,7 +622,7 @@ def main():
                 namespace = enum.metadata.namespace
                 description = enum.metadata.description
 
-                rolebindingNode = Node("RoleBinding", name=name, namespace=namespace, uid=uid)
+                rolebindingNode = Node("RoleBinding", name=name, namespace=namespace, uid=enum.metadata.uid)
                 rolebindingNode.__primarylabel__ = "RoleBinding"
                 rolebindingNode.__primarykey__ = "uid"
 
@@ -651,8 +637,7 @@ def main():
                         roleNode.__primarykey__ = "uid"
 
                     except: 
-                        uid = roleName
-                        roleNode = Node("AbsentClusterRole", name=roleName, uid=uid)
+                        roleNode = Node("AbsentClusterRole", name=roleName, uid=roleName)
                         roleNode.__primarylabel__ = "AbsentClusterRole"
                         roleNode.__primarykey__ = "uid"
 
@@ -664,8 +649,7 @@ def main():
                         roleNode.__primarykey__ = "uid"
 
                     except: 
-                        uid = roleName + "_" + namespace
-                        roleNode = Node("AbsentRole",name=roleName, namespace=namespace, uid=uid)
+                        roleNode = Node("AbsentRole",name=roleName, namespace=namespace, uid=roleName + "_" + namespace)
                         roleNode.__primarylabel__ = "AbsentRole"
                         roleNode.__primarykey__ = "uid"
 
@@ -687,8 +671,7 @@ def main():
                                     projectNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = subjectNamespace
-                                    projectNode = Node("AbsentProject", name=subjectNamespace, uid=uid)
+                                    projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                     projectNode.__primarylabel__ = "AbsentProject"
                                     projectNode.__primarykey__ = "uid"
 
@@ -699,8 +682,7 @@ def main():
                                     subjectNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = subjectName+"_"+subjectNamespace
-                                    subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=uid)
+                                    subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                     subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                     subjectNode.__primarykey__ = "uid"
                                     # print("!!!! serviceAccount related to Role: ", roleName ,", don't exist: ", subjectNamespace, ":", subjectName, sep='')
@@ -745,14 +727,12 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = groupNamespace
-                                    groupNode = Node("AbsentProject", name=groupNamespace, uid=uid)
+                                    groupNode = Node("AbsentProject", name=groupNamespace, uid=groupNamespace)
                                     groupNode.__primarylabel__ = "AbsentProject"
                                     groupNode.__primarykey__ = "uid"
 
                             elif "system:" in subjectName:
-                                uid = subjectName
-                                groupNode = Node("SystemGroup", name=subjectName, uid=uid)
+                                groupNode = Node("SystemGroup", name=subjectName, uid=subjectName)
                                 groupNode.__primarylabel__ = "SystemGroup"
                                 groupNode.__primarykey__ = "uid"
 
@@ -764,8 +744,7 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = subjectName
-                                    groupNode = Node("AbsentGroup", name=subjectName, uid=uid)
+                                    groupNode = Node("AbsentGroup", name=subjectName, uid=subjectName)
                                     groupNode.__primarylabel__ = "AbsentGroup"
                                     groupNode.__primarykey__ = "uid"
 
@@ -803,8 +782,7 @@ def main():
                                 userNode.__primarykey__ = "uid"
 
                             except: 
-                                uid = subjectName
-                                userNode = Node("AbsentUser", name=subjectName, uid=uid)
+                                userNode = Node("AbsentUser", name=subjectName, uid=subjectName)
                                 userNode.__primarylabel__ = "AbsentUser"
                                 userNode.__primarykey__ = "uid"
 
@@ -871,8 +849,7 @@ def main():
                         roleNode.__primarykey__ = "uid"
 
                     except: 
-                        uid = roleName
-                        roleNode = Node("AbsentClusterRole",name=roleName, uid=uid)
+                        roleNode = Node("AbsentClusterRole",name=roleName, uid=roleName)
                         roleNode.__primarylabel__ = "AbsentClusterRole"
                         roleNode.__primarykey__ = "uid"
 
@@ -884,8 +861,7 @@ def main():
                         roleNode.__primarykey__ = "uid"
 
                     except: 
-                        uid=roleName+"_"+namespace
-                        roleNode = Node("AbsentRole",name=roleName, namespace=namespace, uid=uid)
+                        roleNode = Node("AbsentRole",name=roleName, namespace=namespace, uid=roleName+"_"+namespace)
                         roleNode.__primarylabel__ = "AbsentRole"
                         roleNode.__primarykey__ = "uid"
 
@@ -904,8 +880,7 @@ def main():
                                     projectNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = subjectNamespace
-                                    projectNode = Node("AbsentProject", name=subjectNamespace, uid=uid)
+                                    projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                     projectNode.__primarylabel__ = "AbsentProject"
                                     projectNode.__primarykey__ = "uid"
 
@@ -916,8 +891,7 @@ def main():
                                     subjectNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = subjectName+"_"+subjectNamespace
-                                    subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=uid)
+                                    subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                     subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                     subjectNode.__primarykey__ = "uid"
                                     # print("!!!! serviceAccount related to Role: ", roleName ,", don't exist: ", subjectNamespace, ":", subjectName, sep='')
@@ -962,14 +936,12 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = groupNamespace
-                                    groupNode = Node("AbsentProject", name=groupNamespace, uid=uid)
+                                    groupNode = Node("AbsentProject", name=groupNamespace, uid=groupNamespace)
                                     groupNode.__primarylabel__ = "AbsentProject"
                                     groupNode.__primarykey__ = "uid"
 
                             elif "system:" in subjectName:
-                                uid = subjectName
-                                groupNode = Node("SystemGroup", name=subjectName, uid=uid)
+                                groupNode = Node("SystemGroup", name=subjectName, uid=subjectName)
                                 groupNode.__primarylabel__ = "SystemGroup"
                                 groupNode.__primarykey__ = "uid"
 
@@ -981,8 +953,7 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 except: 
-                                    uid = subjectName
-                                    groupNode = Node("AbsentGroup", name=subjectName, uid=uid)
+                                    groupNode = Node("AbsentGroup", name=subjectName, uid=subjectName)
                                     groupNode.__primarylabel__ = "AbsentGroup"
                                     groupNode.__primarykey__ = "uid"
 
@@ -1020,8 +991,7 @@ def main():
                                 userNode.__primarykey__ = "uid"
 
                             except: 
-                                uid = subjectName
-                                userNode = Node("AbsentUser", name=subjectName, uid=uid)
+                                userNode = Node("AbsentUser", name=subjectName, uid=subjectName)
                                 userNode.__primarylabel__ = "AbsentUser"
                                 userNode.__primarykey__ = "uid"
 
@@ -1085,8 +1055,7 @@ def main():
                     projectNode.__primarykey__ = "uid"
 
                 except: 
-                    uid = namespace
-                    projectNode = Node("AbsentProject",name=namespace, uid=uid)
+                    projectNode = Node("AbsentProject",name=namespace, uid=namespace)
                     projectNode.__primarylabel__ = "AbsentProject"
                     projectNode.__primarykey__ = "uid"
 
@@ -1282,8 +1251,7 @@ def main():
                                         projectNode.__primarykey__ = "uid"
 
                                     except: 
-                                        uid = subjectNamespace
-                                        projectNode = Node("AbsentProject", name=subjectNamespace, uid=uid)
+                                        projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                         projectNode.__primarylabel__ = "AbsentProject"
                                         projectNode.__primarykey__ = "uid"
 
@@ -1294,8 +1262,7 @@ def main():
                                         subjectNode.__primarykey__ = "uid"
 
                                     except: 
-                                        uid = subjectName+"_"+subjectNamespace
-                                        subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=uid)
+                                        subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                         subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
 
