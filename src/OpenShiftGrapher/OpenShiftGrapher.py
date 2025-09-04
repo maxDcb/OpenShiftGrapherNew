@@ -332,9 +332,7 @@ def main():
                                             if apiGroup == "":
                                                 resourceName = resource
                                             else:
-                                                resourceName = apiGroup
-                                                resourceName = ":"
-                                                resourceName = resource
+                                                resourceName = f"{apiGroup}:{resource}"
 
                                             ressourceNode = Node("Resource", name=resourceName, uid="Resource_"+role.metadata.namespace+"_"+resourceName)
                                             ressourceNode.__primarylabel__ = "Resource"
@@ -466,9 +464,7 @@ def main():
                                             if apiGroup == "":
                                                 resourceName = resource
                                             else:
-                                                resourceName = apiGroup
-                                                resourceName = ":"
-                                                resourceName = resource
+                                                resourceName = f"{apiGroup}:{resource}"
 
                                             ressourceNode = Node("Resource", name=resourceName, uid="Resource_cluster"+"_"+resourceName)
                                             ressourceNode.__primarylabel__ = "Resource"
