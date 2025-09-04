@@ -45,7 +45,7 @@ class OpenShiftGrapherTests(unittest.TestCase):
         mock_service_accounts = MagicMock(
             get=MagicMock(side_effect=lambda name=None, namespace=None: (
                 serviceaccount1 if name == "serviceaccount1" and namespace == "namespace1" else
-                serviceaccount2 if name == "namespace2" and namespace == "namespace2" else
+                serviceaccount2 if name == "serviceaccount2" and namespace == "namespace2" else
                 MagicMock(items=[serviceaccount1, serviceaccount2])  # Return list when name is not provided
             ))
         )
