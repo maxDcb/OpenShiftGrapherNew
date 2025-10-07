@@ -18,6 +18,25 @@ The neo4j query system can then be used to spot inconsistency in the database th
 pip install OpenShiftGrapher
 ```
 
+#### Optional: Install with uv
+
+If you prefer to manage isolated environments with [Astral's uv](https://docs.astral.sh/uv/), you can install and run OpenShiftGrapher with the following workflow:
+
+```bash
+# Install uv (see the uv documentation for alternative installation methods)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create and activate a fresh virtual environment
+uv venv
+source .venv/bin/activate
+
+# Install OpenShiftGrapher into the active environment
+uv pip install .
+
+# Run the command line interface
+OpenShiftGrapher -h
+```
+
 The script needs to communicate with the neo4j database, and the OpenShift cluster in python.
 
 To install the neo4j database we recommend to install neo4j desktop, which contain the database and bloom for visualisation:  

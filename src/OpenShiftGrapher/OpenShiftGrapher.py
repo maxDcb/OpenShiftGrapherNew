@@ -66,6 +66,7 @@ def fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, api_vers
             resource_list = resource.get()
             return resource_list, dyn_client, api_key
         else:
+            print(f"[-] Error fetching {kind}: {e}")
             raise
 
 
@@ -143,10 +144,10 @@ def main():
     clusterrole_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'rbac.authorization.k8s.io/v1', 'ClusterRole')
 
     print("Fetching Users")
-    user_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'User')
+    user_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'user.openshift.io/v1', 'User')
 
     print("Fetching Groups")
-    group_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'Group')
+    group_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'user.openshift.io/v1', 'Group')
 
     print("Fetching RoleBindings")
     roleBinding_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'rbac.authorization.k8s.io/v1', 'RoleBinding')
@@ -160,11 +161,42 @@ def main():
     print("Fetching Pods")
     pod_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'Pod')
 
+    print("Fetching Kyverno logs from pods")
+    kyverno_logs = {}
+    for enum in pod_list.items:
+
+        name = enum.metadata.name
+        namespace = enum.metadata.namespace
+        uid = enum.metadata.uid
+
+        if "kyverno-admission-controller" in name:
+            try:
+                pod_resource = dyn_client.resources.get(api_version="v1", kind="Pod")
+                log_response = pod_resource.get(
+                    name=name,
+                    namespace=namespace,
+                    subresource="log"
+                )
+
+                kyverno_logs[uid] = log_response
+
+            except Exception as e:
+                try:
+                    # error 
+                    containerList = re.search(r'choose one of: \[(.+?)\]', str(e), re.IGNORECASE).group(1)
+                    containerList = containerList.split(" ")
+                    for container in containerList:
+                        api_response = v1.read_namespaced_pod_log(name=name, namespace=namespace, container=container)
+
+                except Exception as t:
+                    print("\n[-] error read_namespaced_pod_log: "+ str(t))  
+                    continue
+
     print("Fetching ConfigMaps")
     configmap_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'ConfigMap')
 
     print("Fetching ValidatingWebhookConfigurations")
-    validatingWebhookConfiguration_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'ValidatingWebhookConfiguration')
+    validatingWebhookConfiguration_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'admissionregistration.k8s.io/v1', 'ValidatingWebhookConfiguration')
 
     ##
     ## Project
@@ -739,7 +771,7 @@ def main():
                 for enum in roleBinding_list.items:
                     bar.next()
 
-                    print(enum)
+                    # print(enum)
                     name = enum.metadata.name
                     uid = enum.metadata.uid
                     namespace = enum.metadata.namespace
@@ -1400,108 +1432,85 @@ def main():
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} KyvernoWhitelist nodes, skipping import.")
         else:
-            with Bar('Kyverno',max = len(pod_list.items)) as bar:
-                for enum in pod_list.items:
-                    bar.next()
-                    # print(enum.metadata)
+            with Bar('Kyverno',max = len(kyverno_logs.items)) as bar:
+                for logs in kyverno_logs.values():
 
-                    name = enum.metadata.name
-                    namespace = enum.metadata.namespace
-                    uid = enum.metadata.uid
+                    # TODO do the same with excludeGroups, excludeRoles, excludedClusterRoles
+                    try:
+                        excludedUsernameList = re.search(r'excludeUsernames=\[(.+?)\]', logs, re.IGNORECASE).group(1)
+                        excludedUsernameList = excludedUsernameList.split(",")
+                    except Exception as t:
+                        print("\n[-] error excludeUsernames: "+ str(t))  
+                        continue
 
-                    if "kyverno-admission-controller" in name:
-                        api_response = ""
-                        try:
-                            api_response = v1.read_namespaced_pod_log(name=name, namespace=namespace)
+                    for subject in excludedUsernameList:
+                        subject=subject.replace('"', '')
+                        split = subject.split(":")
 
-                        except Exception as e:
-                            try:
-                                # error 
-                                containerList = re.search(r'choose one of: \[(.+?)\]', str(e), re.IGNORECASE).group(1)
-                                containerList = containerList.split(" ")
-                                for container in containerList:
-                                    api_response = v1.read_namespaced_pod_log(name=name, namespace=namespace, container=container)
+                        if len(split)==4:
+                            if "serviceaccount" ==  split[1]:
 
-                            except Exception as t:
-                                print("\n[-] error read_namespaced_pod_log: "+ str(t))  
-                                continue
+                                subjectNamespace = split[2]
+                                subjectName = split[3]
 
-                        # TODO do the same with excludeGroups, excludeRoles, excludedClusterRoles
-                        try:
-                            excludedUsernameList = re.search(r'excludeUsernames=\[(.+?)\]', api_response, re.IGNORECASE).group(1)
-                            excludedUsernameList = excludedUsernameList.split(",")
-                        except Exception as t:
-                            print("\n[-] error excludeUsernames: "+ str(t))  
-                            continue
+                                if subjectNamespace:
+                                    try:
+                                        target_project = next(
+                                            (p for p in project_list.items if p.metadata.name == subjectNamespace),
+                                            None
+                                        )
+                                        projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
+                                        projectNode.__primarylabel__ = "Project"
+                                        projectNode.__primarykey__ = "uid"
 
-                        for subject in excludedUsernameList:
-                            subject=subject.replace('"', '')
-                            split = subject.split(":")
+                                    except: 
+                                        projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
+                                        projectNode.__primarylabel__ = "AbsentProject"
+                                        projectNode.__primarykey__ = "uid"
 
-                            if len(split)==4:
-                                if "serviceaccount" ==  split[1]:
+                                    try:
+                                        target_sa = next(
+                                            (sa for sa in serviceAccount_list.items
+                                            if sa.metadata.name == subjectName
+                                            and sa.metadata.namespace == subjectNamespace),
+                                            None
+                                        )
+                                        subjectNode = Node("ServiceAccount",name=target_sa.metadata.name, namespace=target_sa.metadata.namespace, uid=target_sa.metadata.uid)
+                                        subjectNode.__primarylabel__ = "ServiceAccount"
+                                        subjectNode.__primarykey__ = "uid"
 
-                                    subjectNamespace = split[2]
-                                    subjectName = split[3]
+                                    except: 
+                                        subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
+                                        subjectNode.__primarylabel__ = "AbsentServiceAccount"
+                                        subjectNode.__primarykey__ = "uid"
 
-                                    if subjectNamespace:
-                                        try:
-                                            target_project = next(
-                                                (p for p in project_list.items if p.metadata.name == subjectNamespace),
-                                                None
-                                            )
-                                            projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
-                                            projectNode.__primarylabel__ = "Project"
-                                            projectNode.__primarykey__ = "uid"
-
-                                        except: 
-                                            projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
-                                            projectNode.__primarylabel__ = "AbsentProject"
-                                            projectNode.__primarykey__ = "uid"
-
-                                        try:
-                                            target_sa = next(
-                                                (sa for sa in serviceAccount_list.items
-                                                if sa.metadata.name == subjectName
-                                                and sa.metadata.namespace == subjectNamespace),
-                                                None
-                                            )
-                                            subjectNode = Node("ServiceAccount",name=target_sa.metadata.name, namespace=target_sa.metadata.namespace, uid=target_sa.metadata.uid)
-                                            subjectNode.__primarylabel__ = "ServiceAccount"
-                                            subjectNode.__primarykey__ = "uid"
-
-                                        except: 
-                                            subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
-                                            subjectNode.__primarylabel__ = "AbsentServiceAccount"
-                                            subjectNode.__primarykey__ = "uid"
-
-                                        try:
-                                            kyvernoWhitelistNode = Node("KyvernoWhitelist", name="KyvernoWhitelist", uid="KyvernoWhitelist")
-                                            kyvernoWhitelistNode.__primarylabel__ = "KyvernoWhitelist"
-                                            kyvernoWhitelistNode.__primarykey__ = "uid"
+                                    try:
+                                        kyvernoWhitelistNode = Node("KyvernoWhitelist", name="KyvernoWhitelist", uid="KyvernoWhitelist")
+                                        kyvernoWhitelistNode.__primarylabel__ = "KyvernoWhitelist"
+                                        kyvernoWhitelistNode.__primarykey__ = "uid"
 
 
-                                            tx = graph.begin()
-                                            r1 = Relationship(projectNode, "CONTAIN SA", subjectNode)
-                                            r2 = Relationship(subjectNode, "CAN BYPASS KYVERNO", kyvernoWhitelistNode)
-                
-                                            node = tx.merge(projectNode) 
-                                            node = tx.merge(subjectNode) 
-                                            node = tx.merge(kyvernoWhitelistNode) 
-                                            node = tx.merge(r1) 
-                                            node = tx.merge(r2) 
-                                            graph.commit(tx)
+                                        tx = graph.begin()
+                                        r1 = Relationship(projectNode, "CONTAIN SA", subjectNode)
+                                        r2 = Relationship(subjectNode, "CAN BYPASS KYVERNO", kyvernoWhitelistNode)
+            
+                                        node = tx.merge(projectNode) 
+                                        node = tx.merge(subjectNode) 
+                                        node = tx.merge(kyvernoWhitelistNode) 
+                                        node = tx.merge(r1) 
+                                        node = tx.merge(r2) 
+                                        graph.commit(tx)
 
-                                        except Exception as e: 
-                                            if release:
-                                                print(e)
-                                                pass
-                                            else:
-                                                exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                print(exc_type, fname, exc_tb.tb_lineno)
-                                                print("Error:", e)
-                                                sys.exit(1)
+                                    except Exception as e: 
+                                        if release:
+                                            print(e)
+                                            pass
+                                        else:
+                                            exc_type, exc_obj, exc_tb = sys.exc_info()
+                                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                                            print(exc_type, fname, exc_tb.tb_lineno)
+                                            print("Error:", e)
+                                            sys.exit(1)
 
 
     ##
@@ -1529,7 +1538,7 @@ def main():
 
                                 webhookName = webhook.name
                                 matchExpressions = str(webhook.namespaceSelector.matchExpressions)
-                                print(matchExpressions)
+                                # print(matchExpressions)
                                 try:
                                     gatekeeperWhitelistNode = Node("GatekeeperWhitelist", name=webhookName, uid=webhookName, whitelist=matchExpressions)
                                     gatekeeperWhitelistNode.__primarylabel__ = "GatekeeperWhitelist"
