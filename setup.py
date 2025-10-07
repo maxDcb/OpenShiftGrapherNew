@@ -14,6 +14,7 @@ setup(
         "py2neo",
         "openshift",
         "progress",
+        "pytest",
     ],
     entry_points={
         'console_scripts': [
