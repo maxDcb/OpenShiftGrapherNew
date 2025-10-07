@@ -164,33 +164,24 @@ def main():
     print("Fetching Kyverno logs from pods")
     kyverno_logs = {}
     for enum in pod_list.items:
-
         name = enum.metadata.name
         namespace = enum.metadata.namespace
         uid = enum.metadata.uid
 
         if "kyverno-admission-controller" in name:
             try:
-                pod_resource = dyn_client.resources.get(api_version="v1", kind="Pod")
-                log_response = pod_resource.get(
-                    name=name,
-                    namespace=namespace,
-                    subresource="log"
+                # Use the dynamic client request for raw logs
+                response = dyn_client.request(
+                    "get",
+                    f"/api/v1/namespaces/{namespace}/pods/{name}/log"
                 )
 
-                kyverno_logs[uid] = log_response
+                # Get the log text
+                kyverno_logs[uid] = response.strip()
 
             except Exception as e:
-                try:
-                    # error 
-                    containerList = re.search(r'choose one of: \[(.+?)\]', str(e), re.IGNORECASE).group(1)
-                    containerList = containerList.split(" ")
-                    for container in containerList:
-                        api_response = v1.read_namespaced_pod_log(name=name, namespace=namespace, container=container)
-
-                except Exception as t:
-                    print("\n[-] error read_namespaced_pod_log: "+ str(t))  
-                    continue
+                print(f"[-] Failed to get logs for {name}: {e}")
+                continue
 
     print("Fetching ConfigMaps")
     configmap_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'ConfigMap')
@@ -1244,8 +1235,6 @@ def main():
         print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
     else:
         if "all" in collector or "route" in collector:
-
-
             with Bar('Route',max = len(route_list.items)) as bar:
                 for enum in route_list.items:
                     bar.next()
@@ -1303,11 +1292,7 @@ def main():
     ## 
     print("#### Pod ####")
 
-    # if "all" in collector or "pod" in collector:
-    
-    if "pod" in collector:
-
-
+    if "all" in collector or "pod" in collector:
         matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("Pod").count()
         if existing_count > 0:
@@ -1365,9 +1350,7 @@ def main():
     ## 
     print("#### ConfigMap ####")
 
-    # if "all" in collector or "configmap" in collector:
-    if "configmap" in collector:
-
+    if "all" in collector or "configmap" in collector:
         matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("ConfigMap").count()
         if existing_count > 0:
@@ -1426,18 +1409,18 @@ def main():
     print("#### Kyverno whitelist ####")
 
     if "all" in collector or "kyverno" in collector:
-
         matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("KyvernoWhitelist").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} KyvernoWhitelist nodes, skipping import.")
         else:
-            with Bar('Kyverno',max = len(kyverno_logs.items)) as bar:
+            with Bar('Kyverno',max = len(kyverno_logs)) as bar:
                 for logs in kyverno_logs.values():
+                    bar.next()
 
                     # TODO do the same with excludeGroups, excludeRoles, excludedClusterRoles
                     try:
-                        excludedUsernameList = re.search(r'excludeUsernames=\[(.+?)\]', logs, re.IGNORECASE).group(1)
+                        excludedUsernameList = re.search(r'excludeUsernames=\[(.+?)\]', str(logs), re.IGNORECASE).group(1)
                         excludedUsernameList = excludedUsernameList.split(",")
                     except Exception as t:
                         print("\n[-] error excludeUsernames: "+ str(t))  
@@ -1519,7 +1502,6 @@ def main():
     print("#### Gatekeeper whitelist ####")
 
     if "all" in collector or "gatekeeper" in collector:
-
         matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("GatekeeperWhitelist").count()
         if existing_count > 0:
