@@ -49,12 +49,12 @@ Then script can be launched with the following command:
 
 ```bash
 OpenShiftGrapher -h
-usage: OpenShiftGrapher.py [-h] [-r] -a APIURL -t TOKEN [-c COLLECTOR [COLLECTOR ...]] [-u USERNEO4J] [-p PASSWORDNEO4J]
+usage: OpenShiftGrapher [-h] [-r] -a APIURL -t TOKEN [-c COLLECTOR [COLLECTOR ...]] [-u USERNEO4J] [-p PASSWORDNEO4J]
 
 Exemple:
-    GenClusterGraph -a "https://api.cluster.net:6443" -t "eyJhbGciOi..."
-    GenClusterGraph -a "https://api.cluster.net:6443" -t $(cat token.txt)
-    GenClusterGraph -a "https://api.cluster.net:6443" -t $(cat token.txt) -c scc role route
+    OpenShiftGrapher -a "https://api.cluster.net:6443" -t "eyJhbGciOi..."
+    OpenShiftGrapher -a "https://api.cluster.net:6443" -t $(cat token.txt) -c all
+    OpenShiftGrapher -a "https://api.cluster.net:6443" -t $(cat token.txt) -c scc role route
 
 options:
   -h, --help            show this help message and exit
