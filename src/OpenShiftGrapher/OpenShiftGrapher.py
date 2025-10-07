@@ -176,8 +176,15 @@ def main():
                     f"/api/v1/namespaces/{namespace}/pods/{name}/log"
                 )
 
+                if isinstance(response, str):
+                    log_text = response.strip()
+                elif hasattr(response, "text"):
+                    log_text = response.text.strip()
+                else:
+                    log_text = str(response).strip()
+
                 # Get the log text
-                kyverno_logs[uid] = response.strip()
+                kyverno_logs[uid] = log_text
 
             except Exception as e:
                 print(f"[-] Failed to get logs for {name}: {e}")
@@ -766,7 +773,6 @@ def main():
                     name = enum.metadata.name
                     uid = enum.metadata.uid
                     namespace = enum.metadata.namespace
-                    description = enum.metadata.description
 
                     rolebindingNode = Node("RoleBinding", name=name, namespace=namespace, uid=enum.metadata.uid)
                     rolebindingNode.__primarylabel__ = "RoleBinding"
@@ -1006,7 +1012,6 @@ def main():
                     name = enum.metadata.name
                     uid = enum.metadata.uid
                     namespace = enum.metadata.namespace
-                    description = enum.metadata.description
 
                     clusterRolebindingNode = Node("ClusterRoleBinding", name=name, namespace=namespace, uid=uid)
                     clusterRolebindingNode.__primarylabel__ = "ClusterRoleBinding"
