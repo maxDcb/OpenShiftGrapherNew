@@ -160,8 +160,8 @@ def main():
     print("Fetching Pods")
     pod_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'Pod')
 
-    # print("Fetching ConfigMaps")
-    # configmap_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'ConfigMap')
+    print("Fetching ConfigMaps")
+    configmap_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'ConfigMap')
 
     print("Fetching ValidatingWebhookConfigurations")
     validatingWebhookConfiguration_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'v1', 'ValidatingWebhookConfiguration')
@@ -172,7 +172,7 @@ def main():
     print("#### Project ####")    
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("Project")))
+    existing_count = graph.nodes.match("Project").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Project nodes, skipping import.")
     else:
@@ -206,7 +206,7 @@ def main():
     print("#### Service Account ####")
     
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("ServiceAccount")))
+    existing_count = graph.nodes.match("ServiceAccount").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} ServiceAccount nodes, skipping import.")
     else:
@@ -262,7 +262,7 @@ def main():
 
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("SCC")))
+    existing_count = graph.nodes.match("SCC").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} SCC nodes, skipping import.")
     else:
@@ -361,7 +361,7 @@ def main():
     print("#### Role ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("Role")))
+    existing_count = graph.nodes.match("Role").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
     else:
@@ -499,7 +499,7 @@ def main():
     print("#### ClusterRole ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("ClusterRole")))
+    existing_count = graph.nodes.match("ClusterRole").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} ClusterRole nodes, skipping import.")
     else:
@@ -636,7 +636,7 @@ def main():
     print("#### User ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("User")))
+    existing_count = graph.nodes.match("User").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
     else:
@@ -674,7 +674,7 @@ def main():
     print("#### Group ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("Group")))
+    existing_count = graph.nodes.match("Group").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Group nodes, skipping import.")
     else:
@@ -729,7 +729,7 @@ def main():
     print("#### RoleBinding ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("RoleBinding")))
+    existing_count = graph.nodes.match("RoleBinding").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} RoleBinding nodes, skipping import.")
     else:
@@ -776,7 +776,7 @@ def main():
                                 ),
                                 None
                             )
-                            roleNode = Node("Role",name=target_role.metadata.name, namespace=target_role.metadata.namespace, target_role=role.metadata.uid)
+                            roleNode = Node("Role",name=target_role.metadata.name, namespace=target_role.metadata.namespace, uid=target_role.metadata.uid)
                             roleNode.__primarylabel__ = "Role"
                             roleNode.__primarykey__ = "uid"
 
@@ -970,7 +970,7 @@ def main():
     print("#### ClusterRoleBinding ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("ClusterRoleBinding")))
+    existing_count = graph.nodes.match("ClusterRoleBinding").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} ClusterRoleBinding nodes, skipping import.")
     else:
@@ -1207,7 +1207,7 @@ def main():
     print("#### Route ####")
 
     matcher = NodeMatcher(graph)
-    existing_count = len(list(matcher.match("Route")))
+    existing_count = graph.nodes.match("Route").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
     else:
@@ -1277,7 +1277,7 @@ def main():
 
 
         matcher = NodeMatcher(graph)
-        existing_count = len(list(matcher.match("Pod")))
+        existing_count = graph.nodes.match("Pod").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} Pod nodes, skipping import.")
         else:
@@ -1337,7 +1337,7 @@ def main():
     if "configmap" in collector:
 
         matcher = NodeMatcher(graph)
-        existing_count = len(list(matcher.match("ConfigMap")))
+        existing_count = graph.nodes.match("ConfigMap").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} ConfigMap nodes, skipping import.")
         else:
@@ -1396,7 +1396,7 @@ def main():
     if "all" in collector or "kyverno" in collector:
 
         matcher = NodeMatcher(graph)
-        existing_count = len(list(matcher.match("KyvernoWhitelist")))
+        existing_count = graph.nodes.match("KyvernoWhitelist").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} KyvernoWhitelist nodes, skipping import.")
         else:
@@ -1416,7 +1416,8 @@ def main():
 
                         except Exception as e:
                             try:
-                                containerList = re.search(r'choose one of: [(.+)]', str(e), re.IGNORECASE).group(1)
+                                # error 
+                                containerList = re.search(r'choose one of: \[(.+?)\]', str(e), re.IGNORECASE).group(1)
                                 containerList = containerList.split(" ")
                                 for container in containerList:
                                     api_response = v1.read_namespaced_pod_log(name=name, namespace=namespace, container=container)
@@ -1427,7 +1428,7 @@ def main():
 
                         # TODO do the same with excludeGroups, excludeRoles, excludedClusterRoles
                         try:
-                            excludedUsernameList = re.search(r'excludeUsernames=[(.+)]', api_response, re.IGNORECASE).group(1)
+                            excludedUsernameList = re.search(r'excludeUsernames=\[(.+?)\]', api_response, re.IGNORECASE).group(1)
                             excludedUsernameList = excludedUsernameList.split(",")
                         except Exception as t:
                             print("\n[-] error excludeUsernames: "+ str(t))  
@@ -1511,7 +1512,7 @@ def main():
     if "all" in collector or "gatekeeper" in collector:
 
         matcher = NodeMatcher(graph)
-        existing_count = len(list(matcher.match("GatekeeperWhitelist")))
+        existing_count = graph.nodes.match("GatekeeperWhitelist").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} GatekeeperWhitelist nodes, skipping import.")
         else:
