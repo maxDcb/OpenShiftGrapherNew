@@ -83,7 +83,7 @@ def main():
     parser.add_argument('-r', '--resetDB', action="store_true", help='reset the neo4j db.')
     parser.add_argument('-a', '--apiUrl', required=True, help='api url.')
     parser.add_argument('-t', '--token', required=True, help='service account token.')
-    parser.add_argument('-c', '--collector', nargs="+", default=[], help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod ')
+    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod ')
     parser.add_argument('-u', '--userNeo4j', default="neo4j", help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default="rootroot", help='neo4j database password.')
     parser.add_argument('-x', '--proxyUrl', default="", help='proxy url.')
