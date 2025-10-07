@@ -36,8 +36,7 @@ jobs:
       
     - name: Run tests
       run: |
-        cd tests
-        python -m unittest
+        pytest
 
     - name: Build package
       run: python -m build
