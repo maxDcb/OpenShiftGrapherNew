@@ -76,7 +76,7 @@ def main():
     ##
     parser = argparse.ArgumentParser(description=f"""Exemple:
         OpenShiftGrapher -a "https://api.cluster.net:6443" -t "eyJhbGciOi..."
-        OpenShiftGrapher -a "https://api.cluster.net:6443" -t $(cat token.txt)
+        OpenShiftGrapher -a "https://api.cluster.net:6443" -t $(cat token.txt) -c all -d customDB -u neo4j -p rootroot -r
         OpenShiftGrapher -a "https://api.cluster.net:6443" -t $(cat token.txt) -c scc role route""",
         formatter_class=RawTextHelpFormatter,)
 
