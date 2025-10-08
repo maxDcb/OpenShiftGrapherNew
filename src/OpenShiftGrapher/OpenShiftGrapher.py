@@ -293,8 +293,8 @@ def main():
 
     matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("SCC").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} SCC nodes, skipping import.")
+    if existing_count >= len(SCC_list.items):
+        print("⚠️ SCC graph up-to-date, skipping import.")
     else:
         if "all" in collector or "scc" in collector:
             with Bar('SCC',max = len(SCC_list.items)) as bar:
@@ -305,7 +305,14 @@ def main():
                         isPriv = scc.allowPrivilegedContainer
 
                         tx = graph.begin()
-                        sccNode = Node("SCC",name=scc.metadata.name, uid=scc.metadata.uid, allowPrivilegeEscalation=isPriv)
+                        sccNode = Node("SCC",name=scc.metadata.name, 
+                            uid=scc.metadata.uid, 
+                            allowPrivilegeEscalation=scc.allowPrivilegedContainer,
+                            allowHostNetwork=scc.allowHostNetwork,
+                            allowHostPID=scc.allowHostPID,
+                            allowHostIPC=scc.allowHostIPC,
+                            priority=scc.priority if hasattr(scc, "priority") else None,
+                        )
                         sccNode.__primarylabel__ = "SCC"
                         sccNode.__primarykey__ = "uid"
                         node = tx.merge(sccNode) 
@@ -322,9 +329,51 @@ def main():
                             print("Error:", e)
                             sys.exit(1)
 
-                    userNames = scc.users
-                    if userNames:
-                        for subject in userNames:
+                    if hasattr(scc, "groups") and scc.groups:
+                        for group in scc.groups:
+                            try:
+
+                                if group.startswith("system:"):
+                                    # Special case for virtual groups
+                                    groupNode = Node("SystemGroup",
+                                        name=group,
+                                        uid=group  # use the name as UID since it's unique
+                                    )
+                                    groupNode.__primarylabel__ = "SystemGroup"
+                                    groupNode.__primarykey__ = "uid"
+
+                                else:
+                                    target_group = next(
+                                        (g for g in group_list.items if g.metadata.name == group),
+                                        None
+                                    )
+                                    
+                                    groupNode = Node("Group", name=target_group.metadata.name, uid=target_group.metadata.uid)
+                                    groupNode.__primarylabel__ = "Group"
+                                    groupNode.__primarykey__ = "uid"
+
+                                # Create the SCC -> Group relationship
+                                tx = graph.begin()
+                                r = Relationship(groupNode, "CAN USE SCC", sccNode)
+                                tx.merge(groupNode)
+                                tx.merge(sccNode)
+                                tx.merge(r)
+                                graph.commit(tx)
+
+                            except Exception as e:
+                                if release:
+                                    print(e)
+                                    pass
+                                else:
+                                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                                    print(exc_type, fname, exc_tb.tb_lineno)
+                                    print("Error:", e)
+                                    sys.exit(1)
+
+
+                    if hasattr(scc, "users") and scc.groups:
+                        for subject in scc.users:
                             split = subject.split(":")
                             if len(split)==4:
                                 if "serviceaccount" ==  split[1]:
