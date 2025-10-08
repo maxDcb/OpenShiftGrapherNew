@@ -83,7 +83,7 @@ def main():
     parser.add_argument('-r', '--resetDB', action="store_true", help='reset the neo4j db.')
     parser.add_argument('-a', '--apiUrl', required=True, help='api url.')
     parser.add_argument('-t', '--token', required=True, help='service account token.')
-    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod, kyverno, validatingwebhookconfiguration')
+    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod, kyverno, validatingwebhookconfiguration, mutatingwebhookconfiguration, clusterpolicies')
     parser.add_argument('-u', '--userNeo4j', default="neo4j", help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default="rootroot", help='neo4j database password.')
     parser.add_argument('-x', '--proxyUrl', default="", help='proxy url.')
@@ -198,6 +198,9 @@ def main():
 
     print("Fetching MutatingWebhookConfiguration")
     mutatingWebhookConfiguration_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "admissionregistration.k8s.io/v1", "MutatingWebhookConfiguration")
+
+    print("Fetching ClusterPolicy")
+    clusterPolicy_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "kyverno.io/v1", "ClusterPolicy")
 
     ##
     ## Project
@@ -1277,52 +1280,112 @@ def main():
     ## 
     print("#### Route ####")
 
-    existing_count = graph.nodes.match("Route").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
-    else:
-        if "all" in collector or "route" in collector:
-            with Bar('Route',max = len(route_list.items)) as bar:
+    if "all" in collector or "route" in collector:
+        existing_count = graph.nodes.match("Route").count()
+        if existing_count > len(route_list.items):
+            print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
+        else:
+            with Bar('Route', max=len(route_list.items)) as bar:
                 for enum in route_list.items:
                     bar.next()
-                    # print(enum.metadata)
-                    name = enum.metadata.name
-                    namespace = enum.metadata.namespace
-                    uid = enum.metadata.uid
 
-                    host = enum.spec.host
-                    path = enum.spec.path
-                    port= "any"
-                    if enum.spec.port:
-                        port = enum.spec.port.targetPort    
+                    # ───────────────────────────────
+                    # Metadata and basic fields
+                    # ───────────────────────────────
+                    name = getattr(enum.metadata, "name", "unknown-route")
+                    namespace = getattr(enum.metadata, "namespace", "unknown-namespace")
+                    uid = getattr(enum.metadata, "uid", f"{namespace}:{name}")
 
-                    try:
-                        target_project = next(
-                            (p for p in project_list.items if p.metadata.name == namespace),
-                            None
+                    spec = getattr(enum, "spec", None)
+                    host = getattr(spec, "host", None)
+                    path = getattr(spec, "path", None)
+
+                    # Extract target port and service
+                    port = "any"
+                    service_name = None
+                    if spec and hasattr(spec, "port") and getattr(spec, "port", None):
+                        port = getattr(spec.port, "targetPort", "any")
+                    if spec and hasattr(spec, "to") and getattr(spec, "to", None):
+                        service_name = getattr(spec.to, "name", None)
+
+                    # Extract TLS details if present
+                    tls = getattr(spec, "tls", None)
+                    tls_termination = getattr(tls, "termination", None) if tls else None
+                    insecure_policy = getattr(tls, "insecureEdgeTerminationPolicy", None) if tls else None
+
+                    # ───────────────────────────────
+                    # Determine security/risk level
+                    # ───────────────────────────────
+                    risk_tags = []
+                    if not tls:
+                        risk_tags.append("⚠️ no TLS")
+                    elif insecure_policy and insecure_policy.lower() == "allow":
+                        risk_tags.append("⚠️ allows insecure (HTTP)")
+                    elif tls_termination and tls_termination.lower() in ["edge", "passthrough"]:
+                        # Edge termination can be OK, but note if HTTP allowed
+                        if insecure_policy and insecure_policy.lower() != "none":
+                            risk_tags.append("⚠️ partially insecure (edge HTTP fallback)")
+
+                    if host and ("*" in host or host.startswith("0.0.0.0")):
+                        risk_tags.append("⚠️ wildcard host")
+
+                    # Routes pointing to internal or system namespaces
+                    if namespace.startswith("openshift") or namespace.startswith("kube-"):
+                        risk_tags.append("⚠️ system namespace exposure")
+
+                    risk_str = ", ".join(risk_tags) if risk_tags else "✅ secure"
+
+                    # ───────────────────────────────
+                    # Project relationship
+                    # ───────────────────────────────
+                    target_project = next(
+                        (p for p in project_list.items if p.metadata.name == namespace),
+                        None
+                    )
+                    if target_project:
+                        projectNode = Node(
+                            "Project",
+                            name=target_project.metadata.name,
+                            uid=target_project.metadata.uid
                         )
-                        projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                         projectNode.__primarylabel__ = "Project"
                         projectNode.__primarykey__ = "uid"
-
-                    except: 
-                        projectNode = Node("AbsentProject",name=namespace, uid=namespace)
+                    else:
+                        projectNode = Node("AbsentProject", name=namespace, uid=namespace)
                         projectNode.__primarylabel__ = "AbsentProject"
                         projectNode.__primarykey__ = "uid"
 
-                    routeNode = Node("Route",name=name, namespace=namespace, uid=uid, host=host, port=port, path=path)
+                    # ───────────────────────────────
+                    # Create Route node
+                    # ───────────────────────────────
+                    routeNode = Node(
+                        "Route",
+                        name=name,
+                        namespace=namespace,
+                        uid=uid,
+                        host=host,
+                        port=str(port),
+                        path=path,
+                        service=service_name,
+                        tlsTermination=tls_termination,
+                        insecurePolicy=insecure_policy,
+                        risk=risk_str
+                    )
                     routeNode.__primarylabel__ = "Route"
                     routeNode.__primarykey__ = "uid"
 
+                    # ───────────────────────────────
+                    # Commit to Neo4j
+                    # ───────────────────────────────
                     try:
                         tx = graph.begin()
-                        relationShip = Relationship(projectNode, "CONTAIN ROUTE", routeNode)
-                        node = tx.merge(projectNode) 
-                        node = tx.merge(routeNode) 
-                        node = tx.merge(relationShip) 
+                        rel = Relationship(projectNode, "CONTAINS_ROUTE", routeNode)
+                        tx.merge(projectNode)
+                        tx.merge(routeNode)
+                        tx.merge(rel)
                         graph.commit(tx)
 
-                    except Exception as e: 
+                    except Exception as e:
                         if release:
                             print(e)
                             pass
@@ -1545,7 +1608,6 @@ def main():
     ## 
 
     if "all" in collector or "validatingwebhookconfiguration" in collector:
-
         existing_count = graph.nodes.match("ValidatingWebhookConfiguration").count()
         if existing_count >= len(validatingWebhookConfiguration_list.items):
             print(f"⚠️ Database already has {existing_count} ValidatingWebhookConfiguration nodes, skipping import.")
@@ -1667,108 +1729,214 @@ def main():
     ## 
     if "all" in collector or "mutatingwebhookconfiguration" in collector:
         existing_count = graph.nodes.match("MutatingWebhookConfiguration").count()
-    if existing_count > len(mutatingWebhookConfiguration_list.items):
-        print(f"⚠️ Database already has {existing_count} MutatingWebhookConfiguration nodes, skipping import.")
-    else:
-        with Bar('MutatingWebhookConfiguration', max=len(mutatingWebhookConfiguration_list.items)) as bar:
-            for enum in mutatingWebhookConfiguration_list.items:
-                bar.next()
-                config_name = getattr(enum.metadata, "name", None)
-                if not config_name:
-                    continue
+        if existing_count > len(mutatingWebhookConfiguration_list.items):
+            print(f"⚠️ Database already has {existing_count} MutatingWebhookConfiguration nodes, skipping import.")
+        else:
+            with Bar('MutatingWebhookConfiguration', max=len(mutatingWebhookConfiguration_list.items)) as bar:
+                for enum in mutatingWebhookConfiguration_list.items:
+                    bar.next()
+                    config_name = getattr(enum.metadata, "name", None)
+                    if not config_name:
+                        continue
 
-                # ───────────────────────────────
-                # Create parent configuration node
-                # ───────────────────────────────
-                cfgNode = Node(
-                    "MutatingWebhookConfiguration",
-                    name=config_name,
-                    uid=getattr(enum.metadata, "uid", config_name),
-                )
-                cfgNode.__primarylabel__ = "MutatingWebhookConfiguration"
-                cfgNode.__primarykey__ = "uid"
+                    # ───────────────────────────────
+                    # Create parent configuration node
+                    # ───────────────────────────────
+                    cfgNode = Node(
+                        "MutatingWebhookConfiguration",
+                        name=config_name,
+                        uid=getattr(enum.metadata, "uid", config_name),
+                    )
+                    cfgNode.__primarylabel__ = "MutatingWebhookConfiguration"
+                    cfgNode.__primarykey__ = "uid"
 
-                tx = graph.begin()
-                tx.merge(cfgNode)
-                graph.commit(tx)
+                    tx = graph.begin()
+                    tx.merge(cfgNode)
+                    graph.commit(tx)
 
-                # ───────────────────────────────
-                # Iterate through webhooks
-                # ───────────────────────────────
-                webhooks = getattr(enum, "webhooks", [])
-                for webhook in webhooks:
-                    webhook_name = getattr(webhook, "name", "unknown-webhook")
-                    failure_policy = getattr(webhook, "failurePolicy", None)
-                    side_effects = getattr(webhook, "sideEffects", None)
-                    timeout = getattr(webhook, "timeoutSeconds", None)
-                    admission_review_versions = getattr(webhook, "admissionReviewVersions", None)
-                    reinvocation_policy = getattr(webhook, "reinvocationPolicy", None)
-                    match_policy = getattr(webhook, "matchPolicy", None)
+                    # ───────────────────────────────
+                    # Iterate through webhooks
+                    # ───────────────────────────────
+                    webhooks = getattr(enum, "webhooks", [])
+                    for webhook in webhooks:
+                        webhook_name = getattr(webhook, "name", "unknown-webhook")
+                        failure_policy = getattr(webhook, "failurePolicy", None)
+                        side_effects = getattr(webhook, "sideEffects", None)
+                        timeout = getattr(webhook, "timeoutSeconds", None)
+                        admission_review_versions = getattr(webhook, "admissionReviewVersions", None)
+                        reinvocation_policy = getattr(webhook, "reinvocationPolicy", None)
+                        match_policy = getattr(webhook, "matchPolicy", None)
 
-                    # Namespace selector
-                    ns_selector = getattr(webhook, "namespaceSelector", None)
-                    ns_expressions = []
-                    if ns_selector and hasattr(ns_selector, "matchExpressions"):
-                        for expr in ns_selector.matchExpressions or []:
-                            key = getattr(expr, "key", "")
-                            op = getattr(expr, "operator", "")
-                            vals = getattr(expr, "values", [])
-                            ns_expressions.append(f"{key} {op} {vals}")
-                    ns_str = ", ".join(ns_expressions) if ns_expressions else "None"
+                        # Namespace selector
+                        ns_selector = getattr(webhook, "namespaceSelector", None)
+                        ns_expressions = []
+                        if ns_selector and hasattr(ns_selector, "matchExpressions"):
+                            for expr in ns_selector.matchExpressions or []:
+                                key = getattr(expr, "key", "")
+                                op = getattr(expr, "operator", "")
+                                vals = getattr(expr, "values", [])
+                                ns_expressions.append(f"{key} {op} {vals}")
+                        ns_str = ", ".join(ns_expressions) if ns_expressions else "None"
 
-                    # Object selector
-                    obj_selector = getattr(webhook, "objectSelector", None)
-                    obj_expressions = []
-                    if obj_selector and hasattr(obj_selector, "matchExpressions"):
-                        for expr in obj_selector.matchExpressions or []:
-                            key = getattr(expr, "key", "")
-                            op = getattr(expr, "operator", "")
-                            vals = getattr(expr, "values", [])
-                            obj_expressions.append(f"{key} {op} {vals}")
-                    obj_str = ", ".join(obj_expressions) if obj_expressions else "None"
+                        # Object selector
+                        obj_selector = getattr(webhook, "objectSelector", None)
+                        obj_expressions = []
+                        if obj_selector and hasattr(obj_selector, "matchExpressions"):
+                            for expr in obj_selector.matchExpressions or []:
+                                key = getattr(expr, "key", "")
+                                op = getattr(expr, "operator", "")
+                                vals = getattr(expr, "values", [])
+                                obj_expressions.append(f"{key} {op} {vals}")
+                        obj_str = ", ".join(obj_expressions) if obj_expressions else "None"
 
-                    # Rules summary
-                    rules = getattr(webhook, "rules", [])
-                    rule_summaries = []
-                    for rule in rules:
-                        apis = getattr(rule, "apiGroups", [])
-                        resources = getattr(rule, "resources", [])
-                        verbs = getattr(rule, "verbs", [])
-                        operations = getattr(rule, "operations", [])
-                        rule_summaries.append(f"APIs={apis} RES={resources} OPS={operations} VERBS={verbs}")
-                    rules_str = "; ".join(rule_summaries) if rule_summaries else "None"
+                        # Rules summary
+                        rules = getattr(webhook, "rules", [])
+                        rule_summaries = []
+                        for rule in rules:
+                            apis = getattr(rule, "apiGroups", [])
+                            resources = getattr(rule, "resources", [])
+                            verbs = getattr(rule, "verbs", [])
+                            operations = getattr(rule, "operations", [])
+                            rule_summaries.append(f"APIs={apis} RES={resources} OPS={operations} VERBS={verbs}")
+                        rules_str = "; ".join(rule_summaries) if rule_summaries else "None"
 
-                    # Service reference
-                    svc_ref = None
-                    client_config = getattr(webhook, "clientConfig", None)
-                    if client_config and hasattr(client_config, "service"):
-                        svc = client_config.service
-                        svc_ref = f"{getattr(svc, 'namespace', '')}/{getattr(svc, 'name', '')}{getattr(client_config, 'path', '')}"
+                        # Service reference
+                        svc_ref = None
+                        client_config = getattr(webhook, "clientConfig", None)
+                        if client_config and hasattr(client_config, "service"):
+                            svc = client_config.service
+                            svc_ref = f"{getattr(svc, 'namespace', '')}/{getattr(svc, 'name', '')}{getattr(client_config, 'path', '')}"
+
+                        try:
+                            webhookNode = Node(
+                                "MutatingWebhook",
+                                name=webhook_name,
+                                uid=f"{config_name}:{webhook_name}",
+                                failurePolicy=failure_policy,
+                                sideEffects=side_effects,
+                                timeout=timeout,
+                                reinvocationPolicy=reinvocation_policy,
+                                matchPolicy=match_policy,
+                                admissionReviewVersions=str(admission_review_versions),
+                                namespaceSelector=ns_str,
+                                objectSelector=obj_str,
+                                rules=rules_str,
+                                serviceRef=svc_ref,
+                            )
+                            webhookNode.__primarylabel__ = "MutatingWebhook"
+                            webhookNode.__primarykey__ = "uid"
+
+                            tx = graph.begin()
+                            tx.merge(webhookNode)
+                            rel = Relationship(cfgNode, "CONTAINS_WEBHOOK", webhookNode)
+                            tx.merge(rel)
+                            graph.commit(tx)
+
+                        except Exception as e:
+                            if release:
+                                print(e)
+                                pass
+                            else:
+                                exc_type, exc_obj, exc_tb = sys.exc_info()
+                                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                                print(exc_type, fname, exc_tb.tb_lineno)
+                                print("Error:", e)
+                                sys.exit(1)
+
+
+
+    if "all" in collector or "clusterpolicies" in collector:
+        existing_count = graph.nodes.match("ClusterPolicy").count()
+        if existing_count > len(clusterPolicy_list.items):
+            print(f"⚠️ Database already has {existing_count} ClusterPolicy nodes, skipping import.")
+        else:
+            with Bar('ClusterPolicies', max=len(clusterPolicy_list.items)) as bar:
+                for enum in clusterPolicy_list.items:
+                    bar.next()
+                    name = getattr(enum.metadata, "name", None)
+                    if not name:
+                        continue
+
+                    spec = getattr(enum, "spec", None)
+                    enforcement = getattr(spec, "validationFailureAction", "Audit")
+                    background = getattr(spec, "background", None)
+                    validationFailureActionOverrides = getattr(spec, "validationFailureActionOverrides", None)
 
                     try:
-                        webhookNode = Node(
-                            "MutatingWebhook",
-                            name=webhook_name,
-                            uid=f"{config_name}:{webhook_name}",
-                            failurePolicy=failure_policy,
-                            sideEffects=side_effects,
-                            timeout=timeout,
-                            reinvocationPolicy=reinvocation_policy,
-                            matchPolicy=match_policy,
-                            admissionReviewVersions=str(admission_review_versions),
-                            namespaceSelector=ns_str,
-                            objectSelector=obj_str,
-                            rules=rules_str,
-                            serviceRef=svc_ref,
+                        # Create ClusterPolicy node
+                        cpNode = Node(
+                            "ClusterPolicy",
+                            name=name,
+                            uid=getattr(enum.metadata, "uid", name),
+                            enforcement=enforcement,
+                            background=background,
+                            overrides=str(validationFailureActionOverrides),
                         )
-                        webhookNode.__primarylabel__ = "MutatingWebhook"
-                        webhookNode.__primarykey__ = "uid"
+                        cpNode.__primarylabel__ = "ClusterPolicy"
+                        cpNode.__primarykey__ = "uid"
 
                         tx = graph.begin()
-                        tx.merge(webhookNode)
-                        rel = Relationship(cfgNode, "CONTAINS_WEBHOOK", webhookNode)
-                        tx.merge(rel)
+                        tx.merge(cpNode)
                         graph.commit(tx)
+
+                        # ───────────────────────────────
+                        # Extract and link individual rules
+                        # ───────────────────────────────
+                        rules = getattr(spec, "rules", [])
+                        for rule in rules:
+                            rule_name = getattr(rule, "name", "unnamed-rule")
+                            rule_type = "unknown"
+                            if hasattr(rule, "validate"):
+                                rule_type = "validate"
+                            elif hasattr(rule, "mutate"):
+                                rule_type = "mutate"
+                            elif hasattr(rule, "generate"):
+                                rule_type = "generate"
+
+                            match = getattr(rule, "match", {})
+                            exclude = getattr(rule, "exclude", {})
+                            pattern = getattr(getattr(rule, "validate", {}), "pattern", None)
+                            message = getattr(getattr(rule, "validate", {}), "message", None)
+                            patch = getattr(getattr(rule, "mutate", {}), "patchStrategicMerge", None)
+
+                            # Extract matched resources
+                            match_kinds = []
+                            try:
+                                match_kinds = getattr(match["resources"], "kinds", [])
+                            except Exception:
+                                pass
+
+                            try:
+                                policyRuleNode = Node(
+                                    "PolicyRule",
+                                    name=rule_name,
+                                    uid=f"{name}:{rule_name}",
+                                    type=rule_type,
+                                    message=message,
+                                    matchKinds=str(match_kinds),
+                                    pattern=str(pattern),
+                                    patch=str(patch),
+                                    exclude=str(exclude),
+                                )
+                                policyRuleNode.__primarylabel__ = "PolicyRule"
+                                policyRuleNode.__primarykey__ = "uid"
+
+                                tx = graph.begin()
+                                tx.merge(policyRuleNode)
+                                rel = Relationship(cpNode, "CONTAINS_RULE", policyRuleNode)
+                                tx.merge(rel)
+                                graph.commit(tx)
+
+                            except Exception as e:
+                                if release:
+                                    print(e)
+                                    pass
+                                else:
+                                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                                    print(exc_type, fname, exc_tb.tb_lineno)
+                                    print("Error:", e)
+                                    sys.exit(1)
 
                     except Exception as e:
                         if release:
