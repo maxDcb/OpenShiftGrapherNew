@@ -83,7 +83,7 @@ def main():
     parser.add_argument('-r', '--resetDB', action="store_true", help='reset the neo4j db.')
     parser.add_argument('-a', '--apiUrl', required=True, help='api url.')
     parser.add_argument('-t', '--token', required=True, help='service account token.')
-    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod, validatingwebhookconfiguration')
+    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod, kyverno, validatingwebhookconfiguration')
     parser.add_argument('-u', '--userNeo4j', default="neo4j", help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default="rootroot", help='neo4j database password.')
     parser.add_argument('-x', '--proxyUrl', default="", help='proxy url.')
@@ -196,12 +196,14 @@ def main():
     print("Fetching ValidatingWebhookConfigurations")
     validatingWebhookConfiguration_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, 'admissionregistration.k8s.io/v1', 'ValidatingWebhookConfiguration')
 
+    print("Fetching MutatingWebhookConfiguration")
+    mutatingWebhookConfiguration_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "admissionregistration.k8s.io/v1", "MutatingWebhookConfiguration")
+
     ##
     ## Project
     ##
     print("#### Project ####")    
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("Project").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Project nodes, skipping import.")
@@ -235,7 +237,6 @@ def main():
     ##
     print("#### Service Account ####")
     
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("ServiceAccount").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} ServiceAccount nodes, skipping import.")
@@ -438,7 +439,6 @@ def main():
     ## 
     print("#### Role ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("Role").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
@@ -576,7 +576,6 @@ def main():
     ## 
     print("#### ClusterRole ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("ClusterRole").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} ClusterRole nodes, skipping import.")
@@ -713,7 +712,6 @@ def main():
     ## 
     print("#### User ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("User").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
@@ -751,7 +749,6 @@ def main():
     ## 
     print("#### Group ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("Group").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Group nodes, skipping import.")
@@ -806,7 +803,6 @@ def main():
     ## 
     print("#### RoleBinding ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("RoleBinding").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} RoleBinding nodes, skipping import.")
@@ -1046,7 +1042,6 @@ def main():
     ## 
     print("#### ClusterRoleBinding ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("ClusterRoleBinding").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} ClusterRoleBinding nodes, skipping import.")
@@ -1282,7 +1277,6 @@ def main():
     ## 
     print("#### Route ####")
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("Route").count()
     if existing_count > 0:
         print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
@@ -1346,7 +1340,6 @@ def main():
     print("#### Pod ####")
 
     if "all" in collector or "pod" in collector:
-        matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("Pod").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} Pod nodes, skipping import.")
@@ -1404,7 +1397,6 @@ def main():
     print("#### ConfigMap ####")
 
     if "all" in collector or "configmap" in collector:
-        matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("ConfigMap").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} ConfigMap nodes, skipping import.")
@@ -1462,7 +1454,6 @@ def main():
     print("#### Kyverno whitelist ####")
 
     if "all" in collector or "kyverno" in collector:
-        matcher = NodeMatcher(graph)
         existing_count = graph.nodes.match("KyvernoWhitelist").count()
         if existing_count > 0:
             print(f"⚠️ Database already has {existing_count} KyvernoWhitelist nodes, skipping import.")
@@ -1550,7 +1541,7 @@ def main():
 
             
     ##
-    ## validatingwebhooks 
+    ## ValidatingWebhookConfiguration 
     ## 
 
     if "all" in collector or "validatingwebhookconfiguration" in collector:
@@ -1559,7 +1550,7 @@ def main():
         if existing_count >= len(validatingWebhookConfiguration_list.items):
             print(f"⚠️ Database already has {existing_count} ValidatingWebhookConfiguration nodes, skipping import.")
         else:
-            with Bar('ValidatingWebhooks', max=len(validatingWebhookConfiguration_list.items)) as bar:
+            with Bar('ValidatingWebhookConfiguration', max=len(validatingWebhookConfiguration_list.items)) as bar:
                 for enum in validatingWebhookConfiguration_list.items:
                     bar.next()
                     config_name = getattr(enum.metadata, "name", None)
@@ -1669,6 +1660,126 @@ def main():
                                 print(exc_type, fname, exc_tb.tb_lineno)
                                 print("Error:", e)
                                 sys.exit(1)
+
+
+    ##
+    ## MutatingWebhookConfiguration 
+    ## 
+    if "all" in collector or "mutatingwebhookconfiguration" in collector:
+        existing_count = graph.nodes.match("MutatingWebhookConfiguration").count()
+    if existing_count > len(mutatingWebhookConfiguration_list.items):
+        print(f"⚠️ Database already has {existing_count} MutatingWebhookConfiguration nodes, skipping import.")
+    else:
+        with Bar('MutatingWebhookConfiguration', max=len(mutatingWebhookConfiguration_list.items)) as bar:
+            for enum in mutatingWebhookConfiguration_list.items:
+                bar.next()
+                config_name = getattr(enum.metadata, "name", None)
+                if not config_name:
+                    continue
+
+                # ───────────────────────────────
+                # Create parent configuration node
+                # ───────────────────────────────
+                cfgNode = Node(
+                    "MutatingWebhookConfiguration",
+                    name=config_name,
+                    uid=getattr(enum.metadata, "uid", config_name),
+                )
+                cfgNode.__primarylabel__ = "MutatingWebhookConfiguration"
+                cfgNode.__primarykey__ = "uid"
+
+                tx = graph.begin()
+                tx.merge(cfgNode)
+                graph.commit(tx)
+
+                # ───────────────────────────────
+                # Iterate through webhooks
+                # ───────────────────────────────
+                webhooks = getattr(enum, "webhooks", [])
+                for webhook in webhooks:
+                    webhook_name = getattr(webhook, "name", "unknown-webhook")
+                    failure_policy = getattr(webhook, "failurePolicy", None)
+                    side_effects = getattr(webhook, "sideEffects", None)
+                    timeout = getattr(webhook, "timeoutSeconds", None)
+                    admission_review_versions = getattr(webhook, "admissionReviewVersions", None)
+                    reinvocation_policy = getattr(webhook, "reinvocationPolicy", None)
+                    match_policy = getattr(webhook, "matchPolicy", None)
+
+                    # Namespace selector
+                    ns_selector = getattr(webhook, "namespaceSelector", None)
+                    ns_expressions = []
+                    if ns_selector and hasattr(ns_selector, "matchExpressions"):
+                        for expr in ns_selector.matchExpressions or []:
+                            key = getattr(expr, "key", "")
+                            op = getattr(expr, "operator", "")
+                            vals = getattr(expr, "values", [])
+                            ns_expressions.append(f"{key} {op} {vals}")
+                    ns_str = ", ".join(ns_expressions) if ns_expressions else "None"
+
+                    # Object selector
+                    obj_selector = getattr(webhook, "objectSelector", None)
+                    obj_expressions = []
+                    if obj_selector and hasattr(obj_selector, "matchExpressions"):
+                        for expr in obj_selector.matchExpressions or []:
+                            key = getattr(expr, "key", "")
+                            op = getattr(expr, "operator", "")
+                            vals = getattr(expr, "values", [])
+                            obj_expressions.append(f"{key} {op} {vals}")
+                    obj_str = ", ".join(obj_expressions) if obj_expressions else "None"
+
+                    # Rules summary
+                    rules = getattr(webhook, "rules", [])
+                    rule_summaries = []
+                    for rule in rules:
+                        apis = getattr(rule, "apiGroups", [])
+                        resources = getattr(rule, "resources", [])
+                        verbs = getattr(rule, "verbs", [])
+                        operations = getattr(rule, "operations", [])
+                        rule_summaries.append(f"APIs={apis} RES={resources} OPS={operations} VERBS={verbs}")
+                    rules_str = "; ".join(rule_summaries) if rule_summaries else "None"
+
+                    # Service reference
+                    svc_ref = None
+                    client_config = getattr(webhook, "clientConfig", None)
+                    if client_config and hasattr(client_config, "service"):
+                        svc = client_config.service
+                        svc_ref = f"{getattr(svc, 'namespace', '')}/{getattr(svc, 'name', '')}{getattr(client_config, 'path', '')}"
+
+                    try:
+                        webhookNode = Node(
+                            "MutatingWebhook",
+                            name=webhook_name,
+                            uid=f"{config_name}:{webhook_name}",
+                            failurePolicy=failure_policy,
+                            sideEffects=side_effects,
+                            timeout=timeout,
+                            reinvocationPolicy=reinvocation_policy,
+                            matchPolicy=match_policy,
+                            admissionReviewVersions=str(admission_review_versions),
+                            namespaceSelector=ns_str,
+                            objectSelector=obj_str,
+                            rules=rules_str,
+                            serviceRef=svc_ref,
+                        )
+                        webhookNode.__primarylabel__ = "MutatingWebhook"
+                        webhookNode.__primarykey__ = "uid"
+
+                        tx = graph.begin()
+                        tx.merge(webhookNode)
+                        rel = Relationship(cfgNode, "CONTAINS_WEBHOOK", webhookNode)
+                        tx.merge(rel)
+                        graph.commit(tx)
+
+                    except Exception as e:
+                        if release:
+                            print(e)
+                            pass
+                        else:
+                            exc_type, exc_obj, exc_tb = sys.exc_info()
+                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                            print(exc_type, fname, exc_tb.tb_lineno)
+                            print("Error:", e)
+                            sys.exit(1)
 
 
 
