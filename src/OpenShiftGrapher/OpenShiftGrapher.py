@@ -128,6 +128,12 @@ def main():
 
     print("#### Fetch resources ####")
 
+    print("Fetching OAuth")
+    oauth_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "config.openshift.io/v1", "OAuth")
+    
+    print("Fetching Identity")
+    identity_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "user.openshift.io/v1", "Identity")
+
     print("Fetching Projects")
     project_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "project.openshift.io/v1", "Project")
 
@@ -202,27 +208,189 @@ def main():
     print("Fetching ClusterPolicy")
     clusterPolicy_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "kyverno.io/v1", "ClusterPolicy")
 
+
+    ##
+    ## OAuth
+    ##
+    print("#### OAuth ####")
+
+    if "all" in collector or "oauth" in collector:
+        existing_count = graph.nodes.match("OAuth").count()
+        if existing_count >= len(oauth_list.items):
+            print(f"⚠️ Database already has {existing_count} OAuth nodes, skipping import.")
+        else:
+            with Bar('OAuth',max = len(oauth_list.items)) as bar:
+                    for enum in oauth_list.items:
+                        bar.next()
+
+                        oauthNode = Node("OAuth", name=enum.metadata.name)
+                        oauthNode.__primarylabel__ = "OAuth"
+                        oauthNode.__primarykey__ = "name"
+
+                        tx = graph.begin()
+                        tx.merge(oauthNode)
+
+                        for idp in getattr(enum.spec, "identityProviders", []):
+                            idpNode = Node("IdentityProvider",
+                                        name=idp.name,
+                                        type=idp.type,
+                                        mappingMethod=getattr(idp, "mappingMethod", "N/A"))
+                            idpNode.__primarylabel__ = "IdentityProvider"
+                            idpNode.__primarykey__ = "name"
+                            tx.merge(idpNode)
+
+                            rel = Relationship(oauthNode, "USES_PROVIDER", idpNode)
+                            tx.merge(rel)
+                        graph.commit(tx)
+
+
+    ##
+    ## Identities
+    ##
+    print("#### Identities ####")
+
+    if "all" in collector or "identity" in collector:
+        existing_count = graph.nodes.match("Identity").count()
+        if existing_count >= len(identity_list.items):
+            print(f"⚠️ Database already has {existing_count} Identity nodes, skipping import.")
+        else:
+            with Bar('Identities', max=len(identity_list.items)) as bar:
+                for enum in identity_list.items:
+                    bar.next()
+
+                    name = getattr(enum.metadata, "name", "unknown")
+                    provider_name = getattr(enum, "providerName", "unknown-provider")
+                    provider_user = getattr(enum, "providerUserName", "unknown-user")
+                    user_info = getattr(enum, "user", None)
+                    linked_user = None
+                    linked_user_uid = None
+
+                    if user_info:
+                        linked_user = getattr(user_info, "name", None)
+                        linked_user_uid = getattr(user_info, "uid", None)
+
+                    # ───────────────────────────────
+                    # Identity node
+                    # ───────────────────────────────
+                    identityNode = Node(
+                        "Identity",
+                        name=name,
+                        provider=provider_name,
+                        providerUser=provider_user,
+                        linkedUser=linked_user
+                    )
+                    identityNode.__primarylabel__ = "Identity"
+                    identityNode.__primarykey__ = "name"
+
+                    # ───────────────────────────────
+                    # Related IdentityProvider node
+                    # ───────────────────────────────
+                    providerNode = Node(
+                        "IdentityProvider",
+                        name=provider_name
+                    )
+                    providerNode.__primarylabel__ = "IdentityProvider"
+                    providerNode.__primarykey__ = "name"
+
+                    # ───────────────────────────────
+                    # Related User node (if linked)
+                    # ───────────────────────────────
+                    if linked_user:
+                        userNode = Node(
+                            "User",
+                            name=linked_user,
+                            uid=linked_user_uid
+                        )
+                        userNode.__primarylabel__ = "User"
+                        userNode.__primarykey__ = "name"
+                    else:
+                        userNode = None
+
+                    # ───────────────────────────────
+                    # Write to Neo4j
+                    # ───────────────────────────────
+                    try:
+                        tx = graph.begin()
+                        tx.merge(identityNode)
+                        tx.merge(providerNode)
+
+                        rel1 = Relationship(identityNode, "FROM_PROVIDER", providerNode)
+                        tx.merge(rel1)
+
+                        if userNode:
+                            tx.merge(userNode)
+                            rel2 = Relationship(identityNode, "LINKED_TO_USER", userNode)
+                            tx.merge(rel2)
+
+                        graph.commit(tx)
+
+                    except Exception as e:
+                        if release:
+                            print(e)
+                            pass
+                        else:
+                            exc_type, exc_obj, exc_tb = sys.exc_info()
+                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                            print(exc_type, fname, exc_tb.tb_lineno)
+                            print("Error:", e)
+                            sys.exit(1)
+
+
     ##
     ## Project
     ##
     print("#### Project ####")    
 
-    existing_count = graph.nodes.match("Project").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} Project nodes, skipping import.")
-    else:
-        if "all" in collector or "project" in collector:
-            with Bar('Project',max = len(project_list.items)) as bar:
+    if "all" in collector or "project" in collector:
+        existing_count = graph.nodes.match("Project").count()
+        if existing_count >= len(project_list.items):
+            print(f"⚠️ Database already has {existing_count} Project nodes, skipping import.")
+        else:
+            with Bar('Project', max=len(project_list.items)) as bar:
                 for enum in project_list.items:
                     bar.next()
-                    # print(enum.metadata)
                     try:
+                        # ───────────────────────────────
+                        # Basic project metadata
+                        # ───────────────────────────────
+                        name = getattr(enum.metadata, "name", "unknown")
+                        uid = getattr(enum.metadata, "uid", name)
+                        annotations = getattr(enum.metadata, "annotations", {}) or {}
+
+                        display_name = annotations.get("openshift.io/display-name", None)
+                        requester = annotations.get("openshift.io/requester", None)
+                        description = annotations.get("openshift.io/description", None)
+                        quota = annotations.get("openshift.io/quota", None)
+                        managed_by = annotations.get("openshift.io/managed-by", None)
+                        created = getattr(enum.metadata, "creationTimestamp", None)
+                        phase = getattr(getattr(enum, "status", None), "phase", None)
+
+                        # Classify if system project
+                        isSystem = name.startswith("openshift") or name.startswith("kube-")
+
+                        # ───────────────────────────────
+                        # Create Project node
+                        # ───────────────────────────────
                         tx = graph.begin()
-                        a = Node("Project", name=enum.metadata.name, uid=enum.metadata.uid)
+                        a = Node(
+                            "Project",
+                            name=name,
+                            uid=uid,
+                            displayName=display_name,
+                            requester=requester,
+                            description=description,
+                            quota=quota,
+                            managedBy=managed_by,
+                            created=created,
+                            phase=phase,
+                            isSystem=isSystem,
+                            annotations=str(annotations)  # keep full annotations dict as string
+                        )
                         a.__primarylabel__ = "Project"
                         a.__primarykey__ = "uid"
-                        node = tx.merge(a) 
+                        tx.merge(a)
                         graph.commit(tx)
+
                     except Exception as e: 
                         if release:
                             print(e)
@@ -239,36 +407,63 @@ def main():
     ## Service account
     ##
     print("#### Service Account ####")
-    
-    existing_count = graph.nodes.match("ServiceAccount").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} ServiceAccount nodes, skipping import.")
-    else:
-        if "all" in collector or "sa" in collector:
+
+    if "all" in collector or "sa" in collector or "serviceaccount" in collector:
+        existing_count = graph.nodes.match("ServiceAccount").count()
+        if existing_count >= len(serviceAccount_list.items):
+            print(f"⚠️ Database already has {existing_count} ServiceAccount nodes, skipping import.")
+        else:
             with Bar('Service Account',max = len(serviceAccount_list.items)) as bar:
                 for enum in serviceAccount_list.items:
                     bar.next()
-                    # print(enum.metadata)
                     try:
+                            # ───────────────────────────────
+                        # Extract metadata
+                        # ───────────────────────────────
+                        name = getattr(enum.metadata, "name", None)
+                        namespace = getattr(enum.metadata, "namespace", None)
+                        uid = getattr(enum.metadata, "uid", f"{namespace}:{name}")
+
+                        annotations = getattr(enum.metadata, "annotations", {}) or {}
+                        labels = getattr(enum.metadata, "labels", {}) or {}
+                        created = getattr(enum.metadata, "creationTimestamp", None)
+
+                        secrets = [s.name for s in getattr(enum, "secrets", []) if hasattr(s, "name")]
+                        imagePullSecrets = [s.name for s in getattr(enum, "imagePullSecrets", []) if hasattr(s, "name")]
+                        automount = getattr(enum, "automountServiceAccountToken", None)
+
+                        # ───────────────────────────────
+                        # Create SA node
+                        # ───────────────────────────────
                         tx = graph.begin()
-                        a = Node("ServiceAccount", name=enum.metadata.name, namespace=enum.metadata.namespace, uid=enum.metadata.uid)
+                        a = Node(
+                            "ServiceAccount",
+                            name=name,
+                            namespace=namespace,
+                            uid=uid,
+                            automount=automount,
+                            secrets=",".join(secrets),
+                            imagePullSecrets=",".join(imagePullSecrets),
+                            created=created,
+                            annotations=str(annotations),
+                            labels=str(labels)
+                        )
                         a.__primarylabel__ = "ServiceAccount"
                         a.__primarykey__ = "uid"
 
-                        try:
-                            target_project = next(
-                                (p for p in project_list.items if p.metadata.name == enum.metadata.namespace),
-                                None
-                            )
+                        target_project = next(
+                            (p for p in project_list.items if p.metadata.name == enum.metadata.namespace),
+                            None
+                        )
+
+                        if target_project:
                             projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                             projectNode.__primarylabel__ = "Project"
                             projectNode.__primarykey__ = "uid"
-
-                        except: 
+                        else:
                             projectNode = Node("AbsentProject", name=enum.metadata.namespace, uid=enum.metadata.namespace)
                             projectNode.__primarylabel__ = "AbsentProject"
                             projectNode.__primarykey__ = "uid"
-
 
                         r2 = Relationship(projectNode, "CONTAIN SA", a)
 
@@ -294,12 +489,11 @@ def main():
     ##
     print("#### SCC ####")
 
-
-    existing_count = graph.nodes.match("SCC").count()
-    if existing_count >= len(SCC_list.items):
-        print("⚠️ SCC graph up-to-date, skipping import.")
-    else:
-        if "all" in collector or "scc" in collector:
+    if "all" in collector or "scc" in collector:
+        existing_count = graph.nodes.match("SCC").count()
+        if existing_count >= len(SCC_list.items):
+            print("⚠️ SCC graph up-to-date, skipping import.")
+        else:
             with Bar('SCC',max = len(SCC_list.items)) as bar:
                 for scc in SCC_list.items:
                     bar.next()
@@ -442,25 +636,159 @@ def main():
     ## 
     print("#### Role ####")
 
-    existing_count = graph.nodes.match("Role").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
-    else:
-        if "all" in collector or "role" in collector:
-            with Bar('Role',max = len(role_list.items)) as bar:
+    if "all" in collector or "role" in collector:
+        existing_count = graph.nodes.match("Role").count()
+        if existing_count >= len(role_list.items):
+        #     print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
+        # else:
+            with Bar('Role', max=len(role_list.items)) as bar:
+                batch = 0
+                tx = graph.begin()
+
                 for role in role_list.items:
                     bar.next()
-                    # print(role.metadata)
-
-                    roleNode = Node("Role",name=role.metadata.name, namespace=role.metadata.namespace, uid=role.metadata.uid)
-                    roleNode.__primarylabel__ = "Role"
-                    roleNode.__primarykey__ = "uid"
-
                     try:
-                        tx = graph.begin()
-                        node = tx.merge(roleNode) 
-                        graph.commit(tx)
-                    except Exception as e: 
+                        # ───────────────────────────────
+                        # Metadata extraction
+                        # ───────────────────────────────
+                        name = getattr(role.metadata, "name", "unknown")
+                        namespace = getattr(role.metadata, "namespace", "unknown")
+                        uid = getattr(role.metadata, "uid", f"{namespace}:{name}")
+                        annotations = getattr(role.metadata, "annotations", {}) or {}
+                        labels = getattr(role.metadata, "labels", {}) or {}
+                        created = getattr(role.metadata, "creationTimestamp", None)
+
+                        # ───────────────────────────────
+                        # Detect privilege escalation
+                        # ───────────────────────────────
+                        privileged_keywords = [
+                            "pods/exec", "pods/attach", "secrets", "configmaps",
+                            "pods/portforward", "serviceaccounts", "securitycontextconstraints"
+                        ]
+                        dangerous_verbs = ["create", "update", "patch", "delete", "*"]
+                        risk_flag = "✅ normal"
+
+                        for rule in getattr(role, "rules", []) or []:
+                            verbs = getattr(rule, "verbs", []) or []
+                            resources = getattr(rule, "resources", []) or []
+                            for v in verbs:
+                                for r in resources:
+                                    if any(dv in v for dv in dangerous_verbs) and any(pk in r for pk in privileged_keywords):
+                                        risk_flag = "⚠️ potential privilege escalation"
+                                        break
+
+                        # ───────────────────────────────
+                        # Create Role node
+                        # ───────────────────────────────
+                        roleNode = Node(
+                            "Role",
+                            name=name,
+                            namespace=namespace,
+                            uid=uid,
+                            created=created,
+                            annotations=str(annotations),
+                            labels=str(labels),
+                            risk=risk_flag
+                        )
+                        roleNode.__primarylabel__ = "Role"
+                        roleNode.__primarykey__ = "uid"
+                        tx.merge(roleNode)
+
+                        # ───────────────────────────────
+                        # Link Role → Project
+                        # ───────────────────────────────
+                        target_project = next(
+                            (p for p in project_list.items if p.metadata.name == namespace),
+                            None
+                        )
+                        if target_project:
+                            projectNode = Node("Project",
+                                            name=target_project.metadata.name,
+                                            uid=target_project.metadata.uid)
+                            projectNode.__primarylabel__ = "Project"
+                            projectNode.__primarykey__ = "uid"
+                        else:
+                            projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
+                            projectNode.__primarylabel__ = "AbsentProject"
+                            projectNode.__primarykey__ = "uid"
+                        
+                        tx.merge(projectNode)
+                        tx.merge(Relationship(projectNode, "CONTAINS_ROLE", roleNode))
+
+                        # ───────────────────────────────
+                        # Rules → Resource relationships
+                        # ───────────────────────────────
+                        for rule in getattr(role, "rules", []) or []:
+                            apiGroups = getattr(rule, "apiGroups", []) or []
+                            resources = getattr(rule, "resources", []) or []
+                            verbs = getattr(rule, "verbs", []) or []
+                            nonResourceURLs = getattr(rule, "nonResourceURLs", []) or []
+
+                            # Handle SCCs explicitly
+                            for apiGroup in apiGroups:
+                                for resource in resources:
+                                    if resource == "securitycontextconstraints":
+                                        for resourceName in getattr(rule, "resourceNames", []) or []:
+                                            try:
+                                                target_scc = next(
+                                                    (s for s in SCC_list.items if s.metadata.name == resourceName),
+                                                    None
+                                                )
+                                                if target_scc:
+                                                    sccNode = Node("SCC",
+                                                                name=target_scc.metadata.name,
+                                                                uid=target_scc.metadata.uid,
+                                                                exists=True)
+                                                else:
+                                                    raise ValueError("AbsentSCC")
+
+                                            except:
+                                                sccNode = Node("AbsentSCC",
+                                                            name=resourceName,
+                                                            uid=f"SCC_{resourceName}",
+                                                            exists=False)
+
+                                            sccNode.__primarylabel__ = "SCC"
+                                            sccNode.__primarykey__ = "uid"
+                                            tx.merge(sccNode)
+                                            tx.merge(Relationship(roleNode, "CAN_USE_SCC", sccNode))
+
+                                    else:
+                                        for verb in verbs:
+                                            verb_safe = re.sub(r'[^a-zA-Z0-9_]', '_', verb)
+                                            resourceName = f"{apiGroup}:{resource}" if apiGroup else resource
+
+                                            resNode = Node("Resource",
+                                                        name=resourceName,
+                                                        uid=f"Resource_{namespace}_{resourceName}")
+                                            resNode.__primarylabel__ = "Resource"
+                                            resNode.__primarykey__ = "uid"
+                                            tx.merge(resNode)
+
+                                            tx.merge(Relationship(roleNode, verb_safe, resNode))
+
+                            # Handle nonResourceURLs
+                            for nonResourceURL in nonResourceURLs:
+                                for verb in verbs:
+                                    verb_safe = re.sub(r'[^a-zA-Z0-9_]', '_', verb)
+                                    resNode = Node("ResourceNoUrl",
+                                                name=nonResourceURL,
+                                                uid=f"ResourceNoUrl_{namespace}_{nonResourceURL}")
+                                    resNode.__primarylabel__ = "ResourceNoUrl"
+                                    resNode.__primarykey__ = "uid"
+                                    tx.merge(resNode)
+
+                                    tx.merge(Relationship(roleNode, verb_safe, resNode))
+
+                        # ───────────────────────────────
+                        # Batch commit every 100 roles
+                        # ───────────────────────────────
+                        batch += 1
+                        if batch % 100 == 0:
+                            graph.commit(tx)
+                            tx = graph.begin()
+
+                    except Exception as e:
                         if release:
                             print(e)
                             pass
@@ -471,107 +799,9 @@ def main():
                             print("Error:", e)
                             sys.exit(1)
 
-                    if role.rules:
-                        for rule in role.rules:
-                            if rule.apiGroups:
-                                for apiGroup in rule.apiGroups:
-                                    for resource in rule.resources:
-                                        if resource == "securitycontextconstraints":
-                                            if rule.resourceNames:
-                                                for resourceName in rule.resourceNames:
+                # Final commit
+                graph.commit(tx)
 
-                                                    try:
-                                                        target_scc = next(
-                                                            (s for s in SCC_list.items if s.metadata.name == resourceName),
-                                                            None
-                                                        )
-                                                        sccNode = Node("SCC", name=target_scc.metadata.name, uid=target_scc.metadata.uid)
-                                                        sccNode.__primarylabel__ = "SCC"
-                                                        sccNode.__primarykey__ = "uid"
-                                                    except: 
-                                                        sccNode = Node("AbsentSCC", name=resourceName, uid="SCC_"+resourceName)
-                                                        sccNode.__primarylabel__ = "AbsentSCC"
-                                                        sccNode.__primarykey__ = "uid"
-
-                                                    try:
-                                                        tx = graph.begin()
-                                                        r1 = Relationship(roleNode, "CAN USE SCC", sccNode)
-                                                        node = tx.merge(roleNode) 
-                                                        node = tx.merge(sccNode) 
-                                                        node = tx.merge(r1) 
-                                                        graph.commit(tx)
-
-                                                    except Exception as e: 
-                                                        if release:
-                                                            print(e)
-                                                            pass
-                                                        else:
-                                                            exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                            print(exc_type, fname, exc_tb.tb_lineno)
-                                                            print("Error:", e)
-                                                            sys.exit(1)
-
-                                        else:
-                                            for verb in rule.verbs:
-
-                                                if apiGroup == "":
-                                                    resourceName = resource
-                                                else:
-                                                    resourceName = f"{apiGroup}:{resource}"
-
-                                                ressourceNode = Node("Resource", name=resourceName, uid="Resource_"+role.metadata.namespace+"_"+resourceName)
-                                                ressourceNode.__primarylabel__ = "Resource"
-                                                ressourceNode.__primarykey__ = "uid"
-
-                                                try:
-                                                    tx = graph.begin()
-                                                    if verb == "impersonate":
-                                                        r1 = Relationship(roleNode, "impers", ressourceNode)  
-                                                    else:
-                                                        r1 = Relationship(roleNode, verb, ressourceNode)
-                                                    node = tx.merge(roleNode) 
-                                                    node = tx.merge(ressourceNode) 
-                                                    node = tx.merge(r1) 
-                                                    graph.commit(tx)
-
-                                                except Exception as e: 
-                                                    if release:
-                                                        print(e)
-                                                        pass
-                                                    else:
-                                                        exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                        print(exc_type, fname, exc_tb.tb_lineno)
-                                                        print("Error:", e)
-                                                        sys.exit(1)
-
-                            if rule.nonResourceURLs: 
-                                for nonResourceURL in rule.nonResourceURLs: 
-                                    for verb in rule.verbs:
-
-                                        ressourceNode = Node("ResourceNoUrl", name=nonResourceURL, uid="ResourceNoUrl_"+role.metadata.namespace+"_"+nonResourceURL)
-                                        ressourceNode.__primarylabel__ = "ResourceNoUrl"
-                                        ressourceNode.__primarykey__ = "uid"
-
-                                        try:
-                                            tx = graph.begin()
-                                            r1 = Relationship(roleNode, verb, ressourceNode)
-                                            node = tx.merge(roleNode) 
-                                            node = tx.merge(ressourceNode) 
-                                            node = tx.merge(r1) 
-                                            graph.commit(tx)
-
-                                        except Exception as e: 
-                                            if release:
-                                                print(e)
-                                                pass
-                                            else:
-                                                exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                print(exc_type, fname, exc_tb.tb_lineno)
-                                                print("Error:", e)
-                                                sys.exit(1)
 
 
     ##
@@ -579,24 +809,143 @@ def main():
     ## 
     print("#### ClusterRole ####")
 
-    existing_count = graph.nodes.match("ClusterRole").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} ClusterRole nodes, skipping import.")
-    else:
-        if "all" in collector or "clusterrole" in collector:
-            with Bar('ClusterRole',max = len(clusterrole_list.items)) as bar:
+    if "all" in collector or "clusterrole" in collector:
+        existing_count = graph.nodes.match("ClusterRole").count()
+        if existing_count >= len(clusterrole_list.items):
+            print(f"⚠️ Database already has {existing_count} ClusterRole nodes, skipping import.")
+        else:
+            with Bar('ClusterRole', max=len(clusterrole_list.items)) as bar:
+                batch = 0
+                tx = graph.begin()
+
                 for role in clusterrole_list.items:
                     bar.next()
-
                     try:
-                        tx = graph.begin()
-                        roleNode = Node("ClusterRole", name=role.metadata.name, uid=role.metadata.uid)
+                        # ───────────────────────────────
+                        # Metadata extraction
+                        # ───────────────────────────────
+                        name = getattr(role.metadata, "name", "unknown")
+                        uid = getattr(role.metadata, "uid", name)
+                        annotations = getattr(role.metadata, "annotations", {}) or {}
+                        labels = getattr(role.metadata, "labels", {}) or {}
+                        created = getattr(role.metadata, "creationTimestamp", None)
+
+                        # ───────────────────────────────
+                        # Privilege escalation detection
+                        # ───────────────────────────────
+                        privileged_keywords = [
+                            "pods/exec", "pods/attach", "secrets", "configmaps",
+                            "pods/portforward", "serviceaccounts", "securitycontextconstraints"
+                        ]
+                        dangerous_verbs = ["create", "update", "patch", "delete", "*"]
+                        risk_flag = "✅ normal"
+
+                        for rule in getattr(role, "rules", []) or []:
+                            verbs = getattr(rule, "verbs", []) or []
+                            resources = getattr(rule, "resources", []) or []
+                            for v in verbs:
+                                for r in resources:
+                                    if any(dv in v for dv in dangerous_verbs) and any(pk in r for pk in privileged_keywords):
+                                        risk_flag = "⚠️ potential privilege escalation"
+                                        break
+
+                        # ───────────────────────────────
+                        # Create ClusterRole node
+                        # ───────────────────────────────
+                        roleNode = Node(
+                            "ClusterRole",
+                            name=name,
+                            uid=uid,
+                            created=created,
+                            annotations=str(annotations),
+                            labels=str(labels),
+                            risk=risk_flag
+                        )
                         roleNode.__primarylabel__ = "ClusterRole"
                         roleNode.__primarykey__ = "uid"
-                        node = tx.merge(roleNode) 
-                        graph.commit(tx)
+                        tx.merge(roleNode)
 
-                    except Exception as e: 
+                        # ───────────────────────────────
+                        # Rules → Resource relationships
+                        # ───────────────────────────────
+                        for rule in getattr(role, "rules", []) or []:
+                            apiGroups = getattr(rule, "apiGroups", []) or []
+                            resources = getattr(rule, "resources", []) or []
+                            verbs = getattr(rule, "verbs", []) or []
+                            nonResourceURLs = getattr(rule, "nonResourceURLs", []) or []
+
+                            # Handle SCCs explicitly
+                            for apiGroup in apiGroups:
+                                for resource in resources:
+                                    if resource == "securitycontextconstraints":
+                                        for resourceName in getattr(rule, "resourceNames", []) or []:
+                                            try:
+                                                target_scc = next(
+                                                    (s for s in SCC_list.items if s.metadata.name == resourceName),
+                                                    None
+                                                )
+                                                if target_scc:
+                                                    sccNode = Node(
+                                                        "SCC",
+                                                        name=target_scc.metadata.name,
+                                                        uid=target_scc.metadata.uid,
+                                                        exists=True
+                                                    )
+                                                else:
+                                                    raise ValueError("AbsentSCC")
+
+                                            except:
+                                                sccNode = Node(
+                                                    "AbsentSCC",
+                                                    name=resourceName,
+                                                    uid=f"SCC_{resourceName}",
+                                                    exists=False
+                                                )
+
+                                            sccNode.__primarylabel__ = "SCC"
+                                            sccNode.__primarykey__ = "uid"
+                                            tx.merge(sccNode)
+                                            tx.merge(Relationship(roleNode, "CAN_USE_SCC", sccNode))
+
+                                    else:
+                                        for verb in verbs:
+                                            verb_safe = re.sub(r'[^a-zA-Z0-9_]', '_', verb)
+                                            resourceName = f"{apiGroup}:{resource}" if apiGroup else resource
+
+                                            resNode = Node(
+                                                "Resource",
+                                                name=resourceName,
+                                                uid=f"Resource_cluster_{resourceName}"
+                                            )
+                                            resNode.__primarylabel__ = "Resource"
+                                            resNode.__primarykey__ = "uid"
+                                            tx.merge(resNode)
+
+                                            tx.merge(Relationship(roleNode, verb_safe, resNode))
+
+                            # Handle nonResourceURLs
+                            for nonResourceURL in nonResourceURLs:
+                                for verb in verbs:
+                                    verb_safe = re.sub(r'[^a-zA-Z0-9_]', '_', verb)
+                                    resNode = Node(
+                                        "ResourceNoUrl",
+                                        name=nonResourceURL,
+                                        uid=f"ResourceNoUrl_cluster_{nonResourceURL}"
+                                    )
+                                    resNode.__primarylabel__ = "ResourceNoUrl"
+                                    resNode.__primarykey__ = "uid"
+                                    tx.merge(resNode)
+                                    tx.merge(Relationship(roleNode, verb_safe, resNode))
+
+                        # ───────────────────────────────
+                        # Batch commit every 100 roles
+                        # ───────────────────────────────
+                        batch += 1
+                        if batch % 100 == 0:
+                            graph.commit(tx)
+                            tx = graph.begin()
+
+                    except Exception as e:
                         if release:
                             print(e)
                             pass
@@ -607,107 +956,8 @@ def main():
                             print("Error:", e)
                             sys.exit(1)
 
-                    if role.rules:
-                        for rule in role.rules:
-                            if rule.apiGroups:
-                                for apiGroup in rule.apiGroups:
-                                    for resource in rule.resources:
-                                        if resource == "securitycontextconstraints":
-                                            if rule.resourceNames:
-                                                for resourceName in rule.resourceNames:
-
-                                                    try:
-                                                        target_scc = next(
-                                                            (s for s in SCC_list.items if s.metadata.name == resourceName),
-                                                            None
-                                                        )
-                                                        sccNode = Node("SCC", name=target_scc.metadata.name, uid=target_scc.metadata.uid)
-                                                        sccNode.__primarylabel__ = "SCC"
-                                                        sccNode.__primarykey__ = "uid"
-                                                    except: 
-                                                        sccNode = Node("AbsentSCC", name=resourceName, uid="SCC_"+resourceName)
-                                                        sccNode.__primarylabel__ = "AbsentSCC"
-                                                        sccNode.__primarykey__ = "uid"
-
-                                                    try:
-                                                        tx = graph.begin()
-                                                        r1 = Relationship(roleNode, "CAN USE SCC", sccNode)
-                                                        node = tx.merge(roleNode) 
-                                                        node = tx.merge(sccNode) 
-                                                        node = tx.merge(r1) 
-                                                        graph.commit(tx)
-
-                                                    except Exception as e: 
-                                                        if release:
-                                                            print(e)
-                                                            pass
-                                                        else:
-                                                            exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                            print(exc_type, fname, exc_tb.tb_lineno)
-                                                            print("Error:", e)
-                                                            sys.exit(1)
-
-                                        else:
-                                            for verb in rule.verbs:
-
-                                                if apiGroup == "":
-                                                    resourceName = resource
-                                                else:
-                                                    resourceName = f"{apiGroup}:{resource}"
-
-                                                ressourceNode = Node("Resource", name=resourceName, uid="Resource_cluster"+"_"+resourceName)
-                                                ressourceNode.__primarylabel__ = "Resource"
-                                                ressourceNode.__primarykey__ = "uid"
-
-                                                try:
-                                                    tx = graph.begin()
-                                                    if verb == "impersonate":
-                                                        r1 = Relationship(roleNode, "impers", ressourceNode)  
-                                                    else:
-                                                        r1 = Relationship(roleNode, verb, ressourceNode)
-                                                    node = tx.merge(roleNode) 
-                                                    node = tx.merge(ressourceNode) 
-                                                    node = tx.merge(r1) 
-                                                    graph.commit(tx)
-
-                                                except Exception as e: 
-                                                    if release:
-                                                        print(e)
-                                                        pass
-                                                    else:
-                                                        exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                        print(exc_type, fname, exc_tb.tb_lineno)
-                                                        print("Error:", e)
-                                                        sys.exit(1)
-
-                            if rule.nonResourceURLs: 
-                                for nonResourceURL in rule.nonResourceURLs: 
-                                    for verb in rule.verbs:
-
-                                        ressourceNode = Node("ResourceNoUrl", name=nonResourceURL, uid="ResourceNoUrl_cluster"+"_"+nonResourceURL)
-                                        ressourceNode.__primarylabel__ = "ResourceNoUrl"
-                                        ressourceNode.__primarykey__ = "uid"
-
-                                        try:
-                                            tx = graph.begin()
-                                            r1 = Relationship(roleNode, verb, ressourceNode)
-                                            node = tx.merge(roleNode) 
-                                            node = tx.merge(ressourceNode) 
-                                            node = tx.merge(r1) 
-                                            graph.commit(tx)
-
-                                        except Exception as e: 
-                                            if release:
-                                                print(e)
-                                                pass
-                                            else:
-                                                exc_type, exc_obj, exc_tb = sys.exc_info()
-                                                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                                print(exc_type, fname, exc_tb.tb_lineno)
-                                                print("Error:", e)
-                                                sys.exit(1)
+                # Final commit
+                graph.commit(tx)
 
 
     ##
@@ -715,11 +965,11 @@ def main():
     ## 
     print("#### User ####")
 
-    existing_count = graph.nodes.match("User").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
-    else:
-        if "all" in collector or "user" in collector:
+    if "all" in collector or "user" in collector:
+        existing_count = graph.nodes.match("User").count()
+        if existing_count >= len(user_list.items):
+            print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
+        else:
             with Bar('User',max = len(user_list.items)) as bar:
                 for enum in user_list.items:
                     bar.next()
@@ -752,11 +1002,11 @@ def main():
     ## 
     print("#### Group ####")
 
-    existing_count = graph.nodes.match("Group").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} Group nodes, skipping import.")
-    else:
-        if "all" in collector or "group" in collector:
+    if "all" in collector or "group" in collector:
+        existing_count = graph.nodes.match("Group").count()
+        if existing_count >= len(group_list.items):
+            print(f"⚠️ Database already has {existing_count} Group nodes, skipping import.")
+        else:
             with Bar('Group',max = len(group_list.items)) as bar:
                 for enum in group_list.items:
                     bar.next()
@@ -806,11 +1056,11 @@ def main():
     ## 
     print("#### RoleBinding ####")
 
-    existing_count = graph.nodes.match("RoleBinding").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} RoleBinding nodes, skipping import.")
-    else:
-        if "all" in collector or "rolebinding" in collector:
+    if "all" in collector or "rolebinding" in collector:
+        existing_count = graph.nodes.match("RoleBinding").count()
+        if existing_count >= len(roleBinding_list.items):
+            print(f"⚠️ Database already has {existing_count} RoleBinding nodes, skipping import.")
+        else:
             with Bar('RoleBinding',max = len(roleBinding_list.items)) as bar:
 
                 for enum in roleBinding_list.items:
@@ -1045,11 +1295,11 @@ def main():
     ## 
     print("#### ClusterRoleBinding ####")
 
-    existing_count = graph.nodes.match("ClusterRoleBinding").count()
-    if existing_count > 0:
-        print(f"⚠️ Database already has {existing_count} ClusterRoleBinding nodes, skipping import.")
-    else:
-        if "all" in collector or "clusterrolebinding" in collector:
+    if "all" in collector or "clusterrolebinding" in collector:
+        existing_count = graph.nodes.match("ClusterRoleBinding").count()
+        if existing_count >= len(clusterRoleBinding_list.items):
+            print(f"⚠️ Database already has {existing_count} ClusterRoleBinding nodes, skipping import.")
+        else:
             with Bar('ClusterRoleBinding',max = len(clusterRoleBinding_list.items)) as bar:
                 for enum in clusterRoleBinding_list.items:
                     bar.next()
@@ -1282,7 +1532,7 @@ def main():
 
     if "all" in collector or "route" in collector:
         existing_count = graph.nodes.match("Route").count()
-        if existing_count > len(route_list.items):
+        if existing_count >= len(route_list.items):
             print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
         else:
             with Bar('Route', max=len(route_list.items)) as bar:
@@ -1404,7 +1654,7 @@ def main():
 
     if "all" in collector or "pod" in collector:
         existing_count = graph.nodes.match("Pod").count()
-        if existing_count > 0:
+        if existing_count >= len(pod_list.items):
             print(f"⚠️ Database already has {existing_count} Pod nodes, skipping import.")
         else:
             with Bar('Pod',max = len(pod_list.items)) as bar:
@@ -1461,7 +1711,7 @@ def main():
 
     if "all" in collector or "configmap" in collector:
         existing_count = graph.nodes.match("ConfigMap").count()
-        if existing_count > 0:
+        if existing_count >= len(configmap_list.items):
             print(f"⚠️ Database already has {existing_count} ConfigMap nodes, skipping import.")
         else:
             with Bar('ConfigMap',max = len(configmap_list.items)) as bar:
@@ -1518,7 +1768,7 @@ def main():
 
     if "all" in collector or "kyverno" in collector:
         existing_count = graph.nodes.match("KyvernoWhitelist").count()
-        if existing_count > 0:
+        if existing_count >= len(kyverno_logs):
             print(f"⚠️ Database already has {existing_count} KyvernoWhitelist nodes, skipping import.")
         else:
             with Bar('Kyverno',max = len(kyverno_logs)) as bar:
@@ -1729,7 +1979,7 @@ def main():
     ## 
     if "all" in collector or "mutatingwebhookconfiguration" in collector:
         existing_count = graph.nodes.match("MutatingWebhookConfiguration").count()
-        if existing_count > len(mutatingWebhookConfiguration_list.items):
+        if existing_count >= len(mutatingWebhookConfiguration_list.items):
             print(f"⚠️ Database already has {existing_count} MutatingWebhookConfiguration nodes, skipping import.")
         else:
             with Bar('MutatingWebhookConfiguration', max=len(mutatingWebhookConfiguration_list.items)) as bar:
@@ -1847,7 +2097,7 @@ def main():
 
     if "all" in collector or "clusterpolicies" in collector:
         existing_count = graph.nodes.match("ClusterPolicy").count()
-        if existing_count > len(clusterPolicy_list.items):
+        if existing_count >= len(clusterPolicy_list.items):
             print(f"⚠️ Database already has {existing_count} ClusterPolicy nodes, skipping import.")
         else:
             with Bar('ClusterPolicies', max=len(clusterPolicy_list.items)) as bar:
