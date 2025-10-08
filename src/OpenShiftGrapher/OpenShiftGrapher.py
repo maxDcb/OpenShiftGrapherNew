@@ -639,8 +639,8 @@ def main():
     if "all" in collector or "role" in collector:
         existing_count = graph.nodes.match("Role").count()
         if existing_count >= len(role_list.items):
-        #     print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
-        # else:
+            print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
+        else:
             with Bar('Role', max=len(role_list.items)) as bar:
                 batch = 0
                 tx = graph.begin()
@@ -970,23 +970,76 @@ def main():
         if existing_count >= len(user_list.items):
             print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
         else:
-            with Bar('User',max = len(user_list.items)) as bar:
+            with Bar('User', max=len(user_list.items)) as bar:
+                batch = 0
+                tx = graph.begin()
+
                 for enum in user_list.items:
                     bar.next()
-
-                    name = enum.metadata.name
-                    uid = enum.metadata.uid
-
-                    userNode = Node("User", name=name, uid=uid)
-                    userNode.__primarylabel__ = "User"
-                    userNode.__primarykey__ = "uid"
-
                     try:
-                        tx = graph.begin()
-                        node = tx.merge(userNode) 
-                        graph.commit(tx)
+                        # ───────────────────────────────
+                        # Metadata extraction
+                        # ───────────────────────────────
+                        name = getattr(enum.metadata, "name", "unknown")
+                        uid = getattr(enum.metadata, "uid", name)
+                        annotations = getattr(enum.metadata, "annotations", {}) or {}
+                        labels = getattr(enum.metadata, "labels", {}) or {}
+                        created = getattr(enum.metadata, "creationTimestamp", None)
+                        identities = getattr(enum, "identities", []) or []
 
-                    except Exception as e: 
+                        # ───────────────────────────────
+                        # Risk detection
+                        # ───────────────────────────────
+                        if name.startswith("system:"):
+                            risk_flag = "⚠️ system account"
+                        elif name in ["kube:admin", "admin"]:
+                            risk_flag = "⚠️ cluster administrator"
+                        else:
+                            risk_flag = "✅ normal"
+
+                        # ───────────────────────────────
+                        # Create User node
+                        # ───────────────────────────────
+                        userNode = Node(
+                            "User",
+                            name=name,
+                            uid=uid,
+                            created=created,
+                            annotations=str(annotations),
+                            labels=str(labels),
+                            risk=risk_flag
+                        )
+                        userNode.__primarylabel__ = "User"
+                        userNode.__primarykey__ = "uid"
+                        tx.merge(userNode)
+
+                        # # ───────────────────────────────
+                        # # Link User → Identity nodes
+                        # # ───────────────────────────────
+                        # for identity_ref in identities:
+                        #     # Example identity_ref: "github:john", "ldap:uid=jdoe,ou=users"
+                        #     provider, sep, id_name = identity_ref.partition(":")
+                        #     idNode = Node(
+                        #         "Identity",
+                        #         name=id_name if id_name else identity_ref,
+                        #         provider=provider if sep else "unknown",
+                        #         uid=f"Identity_{identity_ref}"
+                        #     )
+                        #     idNode.__primarylabel__ = "Identity"
+                        #     idNode.__primarykey__ = "uid"
+
+                        #     tx.merge(idNode)
+                        #     tx.merge(Relationship(userNode, "LINKED_TO_IDENTITY", idNode))
+
+                        # ───────────────────────────────
+                        # Batch commit every 100 users
+                        # ───────────────────────────────
+                        batch += 1
+                        if batch % 100 == 0:
+                            graph.commit(tx)
+                            tx = graph.begin()
+
+                    except Exception as e:
                         if release:
                             print(e)
                             pass
@@ -996,6 +1049,11 @@ def main():
                             print(exc_type, fname, exc_tb.tb_lineno)
                             print("Error:", e)
                             sys.exit(1)
+
+                # Final commit
+                graph.commit(tx)
+
+
 
     ##
     ## Group
@@ -1007,48 +1065,104 @@ def main():
         if existing_count >= len(group_list.items):
             print(f"⚠️ Database already has {existing_count} Group nodes, skipping import.")
         else:
-            with Bar('Group',max = len(group_list.items)) as bar:
+            with Bar('Group', max=len(group_list.items)) as bar:
+                batch = 0
+                tx = graph.begin()
+
                 for enum in group_list.items:
                     bar.next()
+                    try:
+                        # ───────────────────────────────
+                        # Metadata extraction
+                        # ───────────────────────────────
+                        name = getattr(enum.metadata, "name", "unknown")
+                        uid = getattr(enum.metadata, "uid", name)
+                        annotations = getattr(enum.metadata, "annotations", {}) or {}
+                        labels = getattr(enum.metadata, "labels", {}) or {}
+                        created = getattr(enum.metadata, "creationTimestamp", None)
+                        users = getattr(enum, "users", []) or []
 
-                    if enum.users:
-                        for user in enum.users:
-                            groupNode = Node("Group", name=enum.metadata.name, uid=enum.metadata.uid)
-                            groupNode.__primarylabel__ = "Group"
-                            groupNode.__primarykey__ = "uid"
+                        # ───────────────────────────────
+                        # Risk detection
+                        # ───────────────────────────────
+                        if name.startswith("system:authenticated"):
+                            risk_flag = "⚠️ all authenticated users"
+                        elif name.startswith("system:unauthenticated"):
+                            risk_flag = "⚠️ unauthenticated group"
+                        elif name.startswith("system:"):
+                            risk_flag = "⚠️ system group"
+                        else:
+                            risk_flag = "✅ normal"
 
+                        # ───────────────────────────────
+                        # Create Group node
+                        # ───────────────────────────────
+                        groupNode = Node(
+                            "Group",
+                            name=name,
+                            uid=uid,
+                            created=created,
+                            annotations=str(annotations),
+                            labels=str(labels),
+                            risk=risk_flag
+                        )
+                        groupNode.__primarylabel__ = "Group"
+                        groupNode.__primarykey__ = "uid"
+                        tx.merge(groupNode)
+
+                        # ───────────────────────────────
+                        # Link Group → Users
+                        # ───────────────────────────────
+                        for user_name in users:
                             try:
                                 target_user = next(
-                                    (p for p in user_list.items if p.metadata.name == user),
+                                    (u for u in user_list.items if u.metadata.name == user_name),
                                     None
                                 )
-                                # print(target_user)
-                                userNode = Node("User", name=target_user.metadata.name, uid=target_user.metadata.uid)
-                                userNode.__primarylabel__ = "User"
-                                userNode.__primarykey__ = "uid"
-                            except: 
-                                userNode = Node("AbsentUser", name=user, uid=user)
-                                userNode.__primarylabel__ = "AbsentUser"
-                                userNode.__primarykey__ = "uid"
-                            
-                            try:
-                                tx = graph.begin()
-                                r1 = Relationship(groupNode, "CONTAIN USER", userNode)
-                                node = tx.merge(groupNode) 
-                                node = tx.merge(userNode) 
-                                node = tx.merge(r1) 
-                                graph.commit(tx)
-
-                            except Exception as e: 
-                                if release:
-                                    print(e)
-                                    pass
+                                if target_user:
+                                    userNode = Node(
+                                        "User",
+                                        name=target_user.metadata.name,
+                                        uid=target_user.metadata.uid
+                                    )
                                 else:
-                                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                    print(exc_type, fname, exc_tb.tb_lineno)
-                                    print("Error:", e)
-                                    sys.exit(1)
+                                    raise ValueError("AbsentUser")
+                            except:
+                                userNode = Node(
+                                    "AbsentUser",
+                                    name=user_name,
+                                    uid=user_name
+                                )
+
+                            userNode.__primarylabel__ = "User"
+                            userNode.__primarykey__ = "uid"
+                            tx.merge(userNode)
+
+                            rel = Relationship(groupNode, "CONTAINS_USER", userNode)
+                            tx.merge(rel)
+
+                        # ───────────────────────────────
+                        # Batch commit every 100 groups
+                        # ───────────────────────────────
+                        batch += 1
+                        if batch % 100 == 0:
+                            graph.commit(tx)
+                            tx = graph.begin()
+
+                    except Exception as e:
+                        if release:
+                            print(e)
+                            pass
+                        else:
+                            exc_type, exc_obj, exc_tb = sys.exc_info()
+                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                            print(exc_type, fname, exc_tb.tb_lineno)
+                            print("Error:", e)
+                            sys.exit(1)
+
+                # Final commit
+                graph.commit(tx)
+
 
 
     ##
