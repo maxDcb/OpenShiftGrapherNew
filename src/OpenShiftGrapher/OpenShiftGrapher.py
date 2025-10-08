@@ -83,7 +83,7 @@ def main():
     parser.add_argument('-r', '--resetDB', action="store_true", help='reset the neo4j db.')
     parser.add_argument('-a', '--apiUrl', required=True, help='api url.')
     parser.add_argument('-t', '--token', required=True, help='service account token.')
-    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod ')
+    parser.add_argument('-c', '--collector', nargs="+", default="all", help='list of collectors. Possible values: all, project, scc, sa, role, clusterrole, rolebinding, clusterrolebinding, route, pod, validatingwebhookconfiguration')
     parser.add_argument('-u', '--userNeo4j', default="neo4j", help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default="rootroot", help='neo4j database password.')
     parser.add_argument('-x', '--proxyUrl', default="", help='proxy url.')
@@ -291,7 +291,6 @@ def main():
     print("#### SCC ####")
 
 
-    matcher = NodeMatcher(graph)
     existing_count = graph.nodes.match("SCC").count()
     if existing_count >= len(SCC_list.items):
         print("⚠️ SCC graph up-to-date, skipping import.")
@@ -1549,53 +1548,130 @@ def main():
                                             print("Error:", e)
                                             sys.exit(1)
 
-
+            
     ##
-    ## Gatekeeper 
+    ## validatingwebhooks 
     ## 
-    print("#### Gatekeeper whitelist ####")
 
-    if "all" in collector or "gatekeeper" in collector:
-        matcher = NodeMatcher(graph)
-        existing_count = graph.nodes.match("GatekeeperWhitelist").count()
-        if existing_count > 0:
-            print(f"⚠️ Database already has {existing_count} GatekeeperWhitelist nodes, skipping import.")
+    if "all" in collector or "validatingwebhookconfiguration" in collector:
+
+        existing_count = graph.nodes.match("ValidatingWebhookConfiguration").count()
+        if existing_count >= len(validatingWebhookConfiguration_list.items):
+            print(f"⚠️ Database already has {existing_count} ValidatingWebhookConfiguration nodes, skipping import.")
         else:
-            with Bar('Gatekeeper',max = len(validatingWebhookConfiguration_list.items)) as bar:
+            with Bar('ValidatingWebhooks', max=len(validatingWebhookConfiguration_list.items)) as bar:
                 for enum in validatingWebhookConfiguration_list.items:
                     bar.next()
-                
-                    name = enum.metadata.name
+                    config_name = getattr(enum.metadata, "name", None)
+                    if not config_name:
+                        continue
+                    
+                    # ───────────────────────────────
+                    # Create the parent Configuration node
+                    # ───────────────────────────────
+                    cfgNode = Node(
+                        "ValidatingWebhookConfiguration",
+                        name=config_name,
+                        uid=getattr(enum.metadata, "uid", config_name)
+                    )
+                    cfgNode.__primarylabel__ = "ValidatingWebhookConfiguration"
+                    cfgNode.__primarykey__ = "uid"
 
-                    if "gatekeeper-validating-webhook-configuration" in name:
-                        webhooks = enum.webhooks
-                        if webhooks:
-                            for webhook in enum.webhooks:      
+                    tx = graph.begin()
+                    tx.merge(cfgNode)
+                    graph.commit(tx)
 
-                                webhookName = webhook.name
-                                matchExpressions = str(webhook.namespaceSelector.matchExpressions)
-                                # print(matchExpressions)
-                                try:
-                                    gatekeeperWhitelistNode = Node("GatekeeperWhitelist", name=webhookName, uid=webhookName, whitelist=matchExpressions)
-                                    gatekeeperWhitelistNode.__primarylabel__ = "GatekeeperWhitelist"
-                                    gatekeeperWhitelistNode.__primarykey__ = "uid"
+                    # ───────────────────────────────
+                    # Handle each webhook under it
+                    # ───────────────────────────────
+                    webhooks = getattr(enum, "webhooks", [])
+                    for webhook in webhooks:
+                        webhook_name = getattr(webhook, "name", "unknown-webhook")
+
+                        # Core webhook properties
+                        failure_policy = getattr(webhook, "failurePolicy", None)
+                        side_effects = getattr(webhook, "sideEffects", None)
+                        timeout = getattr(webhook, "timeoutSeconds", None)
+                        admission_review_versions = getattr(webhook, "admissionReviewVersions", None)
+                        rules = getattr(webhook, "rules", [])
+                        client_config = getattr(webhook, "clientConfig", None)
+
+                        # Extract namespace selector (if any)
+                        ns_selector = getattr(webhook, "namespaceSelector", None)
+                        ns_expressions = []
+                        if ns_selector and hasattr(ns_selector, "matchExpressions"):
+                            for expr in ns_selector.matchExpressions or []:
+                                key = getattr(expr, "key", "")
+                                op = getattr(expr, "operator", "")
+                                vals = getattr(expr, "values", [])
+                                ns_expressions.append(f"{key} {op} {vals}")
+                        ns_str = ", ".join(ns_expressions) if ns_expressions else "None"
+
+                        # Extract object selector (if any)
+                        obj_selector = getattr(webhook, "objectSelector", None)
+                        obj_expressions = []
+                        if obj_selector and hasattr(obj_selector, "matchExpressions"):
+                            for expr in obj_selector.matchExpressions or []:
+                                key = getattr(expr, "key", "")
+                                op = getattr(expr, "operator", "")
+                                vals = getattr(expr, "values", [])
+                                obj_expressions.append(f"{key} {op} {vals}")
+                        obj_str = ", ".join(obj_expressions) if obj_expressions else "None"
+
+                        # Build rules summary (verbs, apiGroups, etc.)
+                        rule_summaries = []
+                        for rule in rules:
+                            apis = getattr(rule, "apiGroups", [])
+                            resources = getattr(rule, "resources", [])
+                            verbs = getattr(rule, "verbs", [])
+                            rule_summaries.append(f"APIs={apis} RES={resources} VERBS={verbs}")
+                        rules_str = "; ".join(rule_summaries) if rule_summaries else "None"
+
+                        # Optional: capture client service reference
+                        svc_ref = None
+                        if client_config and hasattr(client_config, "service"):
+                            svc = client_config.service
+                            svc_ref = f"{getattr(svc, 'namespace', '')}/{getattr(svc, 'name', '')}"
+
+                        try:
+                            validatingWebhookNode = Node(
+                                "ValidatingWebhook",
+                                name=webhook_name,
+                                parentConfig=config_name,
+                                uid=f"{config_name}:{webhook_name}",
+                                failurePolicy=failure_policy,
+                                sideEffects=side_effects,
+                                timeout=timeout,
+                                admissionReviewVersions=str(admission_review_versions),
+                                namespaceSelector=ns_str,
+                                objectSelector=obj_str,
+                                rules=rules_str,
+                                serviceRef=svc_ref,
+                            )
+                            validatingWebhookNode.__primarylabel__ = "ValidatingWebhook"
+                            validatingWebhookNode.__primarykey__ = "uid"
+
+                            tx = graph.begin()
+                            tx.merge(validatingWebhookNode)
+
+                            # Create relationship to parent
+                            rel = Relationship(cfgNode, "CONTAINS_WEBHOOK", validatingWebhookNode)
+                            tx.merge(rel)
+                            graph.commit(tx)
+
+                        except Exception as e:
+                            if release:
+                                print(e)
+                                pass
+                            else:
+                                exc_type, exc_obj, exc_tb = sys.exc_info()
+                                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                                print(exc_type, fname, exc_tb.tb_lineno)
+                                print("Error:", e)
+                                sys.exit(1)
 
 
-                                    tx = graph.begin()  
-                                    node = tx.merge(gatekeeperWhitelistNode) 
-                                    graph.commit(tx)
 
-                                except Exception as e: 
-                                    if release:
-                                        print(e)
-                                        pass
-                                    else:
-                                        exc_type, exc_obj, exc_tb = sys.exc_info()
-                                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                                        print(exc_type, fname, exc_tb.tb_lineno)
-                                        print("Error:", e)
-                                        sys.exit(1)
-            
 
 if __name__ == '__main__':
     main()
