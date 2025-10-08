@@ -803,7 +803,6 @@ def main():
                 graph.commit(tx)
 
 
-
     ##
     ## ClusterRole
     ## 
@@ -1054,7 +1053,6 @@ def main():
                 graph.commit(tx)
 
 
-
     ##
     ## Group
     ## 
@@ -1162,7 +1160,6 @@ def main():
 
                 # Final commit
                 graph.commit(tx)
-
 
 
     ##
@@ -1878,7 +1875,7 @@ def main():
     ##
     ## Kyverno 
     ## 
-    print("#### Kyverno whitelist ####")
+    print("#### Kyverno ####")
 
     if "all" in collector or "kyverno" in collector:
         existing_count = graph.nodes.match("KyvernoWhitelist").count()
@@ -1970,6 +1967,7 @@ def main():
     ##
     ## ValidatingWebhookConfiguration 
     ## 
+    print("#### ValidatingWebhookConfiguration ####")
 
     if "all" in collector or "validatingwebhookconfiguration" in collector:
         existing_count = graph.nodes.match("ValidatingWebhookConfiguration").count()
@@ -2091,6 +2089,8 @@ def main():
     ##
     ## MutatingWebhookConfiguration 
     ## 
+    print("#### MutatingWebhookConfiguration ####")
+
     if "all" in collector or "mutatingwebhookconfiguration" in collector:
         existing_count = graph.nodes.match("MutatingWebhookConfiguration").count()
         if existing_count >= len(mutatingWebhookConfiguration_list.items):
@@ -2208,6 +2208,10 @@ def main():
                                 sys.exit(1)
 
 
+    ##
+    ## ClusterPolicy 
+    ## 
+    print("#### ClusterPolicy ####")
 
     if "all" in collector or "clusterpolicies" in collector:
         existing_count = graph.nodes.match("ClusterPolicy").count()
@@ -2312,8 +2316,6 @@ def main():
                             print(exc_type, fname, exc_tb.tb_lineno)
                             print("Error:", e)
                             sys.exit(1)
-
-
 
 
 if __name__ == '__main__':
