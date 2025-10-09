@@ -761,8 +761,8 @@ def _collect_securitycontextconstraints(ctx):
     if _should_collect(collector, "scc", "securitycontextconstraints", "security_context_constraints"):
         existing_count = graph.nodes.match("SecurityContextConstraints").count()
         if existing_count >= len(security_context_constraints_list.items):
-            print(SECURITY_CONTEXT_CONSTRAINTS_SKIP_MESSAGE)
-        else:
+        #     print(SECURITY_CONTEXT_CONSTRAINTS_SKIP_MESSAGE)
+        # else:
             with Bar(
                 SECURITY_CONTEXT_CONSTRAINTS_BAR_LABEL,
                 max=len(security_context_constraints_list.items)
@@ -771,6 +771,8 @@ def _collect_securitycontextconstraints(ctx):
                     bar.next()
 
                     try:
+                        annotations = getattr(scc.metadata, "annotations", {}) or {}
+
                         isPriv = getattr(scc, "allowPrivilegedContainer", False)
                         risk_tags = []
                         if isPriv:
@@ -802,7 +804,8 @@ def _collect_securitycontextconstraints(ctx):
                             allowHostPID=getattr(scc, "allowHostPID", None),
                             allowHostIPC=getattr(scc, "allowHostIPC", None),
                             priority=getattr(scc, "priority", None) if hasattr(scc, "priority") else None,
-                            risk=format_risk_tags(risk_tags)
+                            risk=format_risk_tags(risk_tags),
+                            annotations=str(annotations)
                         )
                         security_context_constraints_node.__primarylabel__ = SECURITY_CONTEXT_CONSTRAINTS_LABEL
                         security_context_constraints_node.__primarykey__ = "uid"
