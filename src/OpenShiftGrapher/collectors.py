@@ -3,6 +3,7 @@
 import os
 import re
 import sys
+from dataclasses import dataclass
 
 from py2neo import Node, Relationship
 from progress.bar import Bar
@@ -53,12 +54,82 @@ def format_risk_tags(tags, default="✅ baseline"):
     return ", ".join(ordered) if ordered else default
 
 
-def run_collectors(
-    graph,
-    collector,
-    release,
-    oauth_list,
-    identity_list,
+@dataclass(slots=True)
+class LookupTables:
+    """Caches of Kubernetes objects keyed for fast lookups during collection."""
+
+    project_by_name: dict
+    serviceaccount_by_ns_name: dict
+    security_context_constraints_by_name: dict
+    role_by_ns_name: dict
+    clusterrole_by_name: dict
+    user_by_name: dict
+    group_by_name: dict
+
+
+@dataclass(slots=True)
+class CollectorContext:
+    """Shared state passed to the individual collector routines."""
+
+    graph: object
+    collector: set
+    release: bool
+    oauth_list: object
+    identity_list: object
+    project_list: object
+    serviceAccount_list: object
+    security_context_constraints_list: object
+    role_list: object
+    clusterrole_list: object
+    user_list: object
+    group_list: object
+    roleBinding_list: object
+    clusterRoleBinding_list: object
+    route_list: object
+    pod_list: object
+    kyverno_logs: object
+    configmap_list: object
+    validatingWebhookConfiguration_list: object
+    mutatingWebhookConfiguration_list: object
+    clusterPolicy_list: object
+    lookups: LookupTables
+
+    @property
+    def project_by_name(self):
+        return self.lookups.project_by_name
+
+    @property
+    def serviceaccount_by_ns_name(self):
+        return self.lookups.serviceaccount_by_ns_name
+
+    @property
+    def security_context_constraints_by_name(self):
+        return self.lookups.security_context_constraints_by_name
+
+    @property
+    def role_by_ns_name(self):
+        return self.lookups.role_by_ns_name
+
+    @property
+    def clusterrole_by_name(self):
+        return self.lookups.clusterrole_by_name
+
+    @property
+    def user_by_name(self):
+        return self.lookups.user_by_name
+
+    @property
+    def group_by_name(self):
+        return self.lookups.group_by_name
+
+
+def _should_collect(collector, *names):
+    """Return True when the requested collectors include any of ``names``."""
+
+    return "all" in collector or any(name in collector for name in names)
+
+
+def _build_lookup_tables(
     project_list,
     serviceAccount_list,
     security_context_constraints_list,
@@ -66,19 +137,9 @@ def run_collectors(
     clusterrole_list,
     user_list,
     group_list,
-    roleBinding_list,
-    clusterRoleBinding_list,
-    route_list,
-    pod_list,
-    kyverno_logs,
-    configmap_list,
-    validatingWebhookConfiguration_list,
-    mutatingWebhookConfiguration_list,
-    clusterPolicy_list,
 ):
-    collector = {item.lower() for item in (collector or [])}
+    """Create lookup dictionaries used across multiple collector routines."""
 
-    # Build lookup tables for quick relationship resolution
     project_by_name = {}
     for item in getattr(project_list, "items", []) or []:
         metadata = getattr(item, "metadata", None)
@@ -130,13 +191,133 @@ def run_collectors(
         if name:
             group_by_name[name] = item
 
+    return LookupTables(
+        project_by_name=project_by_name,
+        serviceaccount_by_ns_name=serviceaccount_by_ns_name,
+        security_context_constraints_by_name=security_context_constraints_by_name,
+        role_by_ns_name=role_by_ns_name,
+        clusterrole_by_name=clusterrole_by_name,
+        user_by_name=user_by_name,
+        group_by_name=group_by_name,
+    )
 
+
+def run_collectors(
+    graph,
+    collector,
+    release,
+    oauth_list,
+    identity_list,
+    project_list,
+    serviceAccount_list,
+    security_context_constraints_list,
+    role_list,
+    clusterrole_list,
+    user_list,
+    group_list,
+    roleBinding_list,
+    clusterRoleBinding_list,
+    route_list,
+    pod_list,
+    kyverno_logs,
+    configmap_list,
+    validatingWebhookConfiguration_list,
+    mutatingWebhookConfiguration_list,
+    clusterPolicy_list,
+):
+    collector = {item.lower() for item in (collector or [])}
+
+    lookups = _build_lookup_tables(
+        project_list,
+        serviceAccount_list,
+        security_context_constraints_list,
+        role_list,
+        clusterrole_list,
+        user_list,
+        group_list,
+    )
+
+    context = CollectorContext(
+        graph=graph,
+        collector=collector,
+        release=release,
+        oauth_list=oauth_list,
+        identity_list=identity_list,
+        project_list=project_list,
+        serviceAccount_list=serviceAccount_list,
+        security_context_constraints_list=security_context_constraints_list,
+        role_list=role_list,
+        clusterrole_list=clusterrole_list,
+        user_list=user_list,
+        group_list=group_list,
+        roleBinding_list=roleBinding_list,
+        clusterRoleBinding_list=clusterRoleBinding_list,
+        route_list=route_list,
+        pod_list=pod_list,
+        kyverno_logs=kyverno_logs,
+        configmap_list=configmap_list,
+        validatingWebhookConfiguration_list=validatingWebhookConfiguration_list,
+        mutatingWebhookConfiguration_list=mutatingWebhookConfiguration_list,
+        clusterPolicy_list=clusterPolicy_list,
+        lookups=lookups,
+    )
+
+    _collect_oauth(context)
+    _collect_identities(context)
+    _collect_project(context)
+    _collect_service_account(context)
+    _collect_securitycontextconstraints(context)
+    _collect_role(context)
+    _collect_clusterrole(context)
+    _collect_user(context)
+    _collect_group(context)
+    _collect_rolebinding(context)
+    _collect_clusterrolebinding(context)
+    _collect_route(context)
+    _collect_pod(context)
+    _collect_configmap(context)
+    _collect_kyverno(context)
+    _collect_validatingwebhookconfiguration(context)
+    _collect_mutatingwebhookconfiguration(context)
+    _collect_clusterpolicy(context)
+
+
+def _collect_oauth(ctx):
+    """Collect OAuth resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## OAuth
     ##
     print(SECTION_HEADERS["oauth"])
 
-    if "all" in collector or "oauth" in collector:
+    if _should_collect(collector, "oauth"):
         existing_count = graph.nodes.match("OAuth").count()
         if existing_count >= len(oauth_list.items):
             print(f"⚠️ Database already has {existing_count} OAuth nodes, skipping import.")
@@ -185,12 +366,42 @@ def run_collectors(
                         graph.commit(tx)
 
 
+def _collect_identities(ctx):
+    """Collect Identities resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Identities
     ##
     print(SECTION_HEADERS["identity"])
 
-    if "all" in collector or "identity" in collector:
+    if _should_collect(collector, "identity"):
         existing_count = graph.nodes.match("Identity").count()
         if existing_count >= len(identity_list.items):
             print(f"⚠️ Database already has {existing_count} Identity nodes, skipping import.")
@@ -285,12 +496,42 @@ def run_collectors(
                             sys.exit(1)
 
 
+def _collect_project(ctx):
+    """Collect Project resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Project
     ##
     print(SECTION_HEADERS["project"])    
 
-    if "all" in collector or "project" in collector:
+    if _should_collect(collector, "project"):
         existing_count = graph.nodes.match("Project").count()
         if existing_count >= len(project_list.items):
             print(f"⚠️ Database already has {existing_count} Project nodes, skipping import.")
@@ -362,12 +603,42 @@ def run_collectors(
                             sys.exit(1)
 
 
+def _collect_service_account(ctx):
+    """Collect Service account resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Service account
     ##
     print(SECTION_HEADERS["service_account"])
 
-    if "all" in collector or "sa" in collector or "serviceaccount" in collector:
+    if _should_collect(collector, "sa", "serviceaccount"):
         existing_count = graph.nodes.match("ServiceAccount").count()
         if existing_count >= len(serviceAccount_list.items):
             print(f"⚠️ Database already has {existing_count} ServiceAccount nodes, skipping import.")
@@ -452,12 +723,42 @@ def run_collectors(
                             sys.exit(1)
 
 
+def _collect_securitycontextconstraints(ctx):
+    """Collect SecurityContextConstraints resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## SecurityContextConstraints
     ##
     print(SECTION_HEADERS["security_context_constraints"])
 
-    if "all" in collector or "scc" in collector or "securitycontextconstraints" in collector or "security_context_constraints" in collector:
+    if _should_collect(collector, "scc", "securitycontextconstraints", "security_context_constraints"):
         existing_count = graph.nodes.match("SecurityContextConstraints").count()
         if existing_count >= len(security_context_constraints_list.items):
             print(SECURITY_CONTEXT_CONSTRAINTS_SKIP_MESSAGE)
@@ -603,7 +904,7 @@ def run_collectors(
                                             node = tx.merge(r1) 
                                             node = tx.merge(r2) 
                                             graph.commit(tx)
-        
+
                                         except Exception as e: 
                                             if release:
                                                 print(e)
@@ -616,12 +917,42 @@ def run_collectors(
                                                 sys.exit(1)
 
 
+def _collect_role(ctx):
+    """Collect Role resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Role
     ## 
     print(SECTION_HEADERS["role"])
 
-    if "all" in collector or "role" in collector:
+    if _should_collect(collector, "role"):
         existing_count = graph.nodes.match("Role").count()
         if existing_count >= len(role_list.items):
             print(f"⚠️ Database already has {existing_count} Role nodes, skipping import.")
@@ -702,7 +1033,7 @@ def run_collectors(
                             projectNode = Node("AbsentProject", name=namespace, uid=namespace)
                             projectNode.__primarylabel__ = "AbsentProject"
                             projectNode.__primarykey__ = "uid"
-                        
+
                         tx.merge(projectNode)
                         tx.merge(Relationship(projectNode, "CONTAINS_ROLE", roleNode))
 
@@ -787,12 +1118,42 @@ def run_collectors(
                 graph.commit(tx)
 
 
+def _collect_clusterrole(ctx):
+    """Collect ClusterRole resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## ClusterRole
     ## 
     print(SECTION_HEADERS["cluster_role"])
 
-    if "all" in collector or "clusterrole" in collector:
+    if _should_collect(collector, "clusterrole"):
         existing_count = graph.nodes.match("ClusterRole").count()
         if existing_count >= len(clusterrole_list.items):
             print(f"⚠️ Database already has {existing_count} ClusterRole nodes, skipping import.")
@@ -949,12 +1310,42 @@ def run_collectors(
                 graph.commit(tx)
 
 
+def _collect_user(ctx):
+    """Collect User resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## User
     ## 
     print(SECTION_HEADERS["user"])
 
-    if "all" in collector or "user" in collector:
+    if _should_collect(collector, "user"):
         # Users are already imported via Identity, but we need to access the risks
         if True:
         # existing_count = graph.nodes.match("User").count()
@@ -1046,12 +1437,42 @@ def run_collectors(
                 graph.commit(tx)
 
 
+def _collect_group(ctx):
+    """Collect Group resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Group
     ## 
     print(SECTION_HEADERS["group"])
 
-    if "all" in collector or "group" in collector:
+    if _should_collect(collector, "group"):
         existing_count = graph.nodes.match("Group").count()
         if existing_count >= len(group_list.items):
             print(f"⚠️ Database already has {existing_count} Group nodes, skipping import.")
@@ -1150,12 +1571,42 @@ def run_collectors(
                 graph.commit(tx)
 
 
+def _collect_rolebinding(ctx):
+    """Collect RoleBinding resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## RoleBinding
     ## 
     print(SECTION_HEADERS["role_binding"])
 
-    if "all" in collector or "rolebinding" in collector:
+    if _should_collect(collector, "rolebinding"):
         existing_count = graph.nodes.match("RoleBinding").count()
         if existing_count >= len(roleBinding_list.items):
             print(f"⚠️ Database already has {existing_count} RoleBinding nodes, skipping import.")
@@ -1381,14 +1832,44 @@ def run_collectors(
 
                             else:
                                 print("[-] RoleBinding subjectKind not handled", subjectKind)
-                                    
 
+
+def _collect_clusterrolebinding(ctx):
+    """Collect ClusterRoleBinding resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## ClusterRoleBinding
     ## 
     print(SECTION_HEADERS["cluster_role_binding"])
 
-    if "all" in collector or "clusterrolebinding" in collector:
+    if _should_collect(collector, "clusterrolebinding"):
         existing_count = graph.nodes.match("ClusterRoleBinding").count()
         if existing_count >= len(clusterRoleBinding_list.items):
             print(f"⚠️ Database already has {existing_count} ClusterRoleBinding nodes, skipping import.")
@@ -1616,12 +2097,42 @@ def run_collectors(
                                 print("[-] RoleBinding subjectKind not handled", subjectKind)
 
 
+def _collect_route(ctx):
+    """Collect Route resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Route
     ## 
     print(SECTION_HEADERS["route"])
 
-    if "all" in collector or "route" in collector:
+    if _should_collect(collector, "route"):
         existing_count = graph.nodes.match("Route").count()
         if existing_count >= len(route_list.items):
             print(f"⚠️ Database already has {existing_count} Route nodes, skipping import.")
@@ -1735,12 +2246,42 @@ def run_collectors(
                             sys.exit(1)
 
 
+def _collect_pod(ctx):
+    """Collect Pod resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Pod
     ## 
     print(SECTION_HEADERS["pod"])
 
-    if "all" in collector or "pod" in collector:
+    if _should_collect(collector, "pod"):
         existing_count = graph.nodes.match("Pod").count()
         if existing_count >= len(pod_list.items):
             print(f"⚠️ Database already has {existing_count} Pod nodes, skipping import.")
@@ -1849,12 +2390,42 @@ def run_collectors(
                             sys.exit(1)
 
 
+def _collect_configmap(ctx):
+    """Collect ConfigMap resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## ConfigMap
     ## 
     print(SECTION_HEADERS["configmap"])
 
-    if "all" in collector or "configmap" in collector:
+    if _should_collect(collector, "configmap"):
         existing_count = graph.nodes.match("ConfigMap").count()
         if existing_count >= len(configmap_list.items):
             print(f"⚠️ Database already has {existing_count} ConfigMap nodes, skipping import.")
@@ -1922,12 +2493,42 @@ def run_collectors(
                             sys.exit(1)
 
 
+def _collect_kyverno(ctx):
+    """Collect Kyverno resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## Kyverno 
     ## 
     print(SECTION_HEADERS["kyverno"])
 
-    if "all" in collector or "kyverno" in collector:
+    if _should_collect(collector, "kyverno"):
         existing_count = graph.nodes.match("KyvernoWhitelist").count()
         if existing_count >= len(kyverno_logs):
             print(f"⚠️ Database already has {existing_count} KyvernoWhitelist nodes, skipping import.")
@@ -1991,7 +2592,7 @@ def run_collectors(
                                         tx = graph.begin()
                                         r1 = Relationship(projectNode, "CONTAIN SA", subjectNode)
                                         r2 = Relationship(subjectNode, "CAN BYPASS KYVERNO", kyvernoWhitelistNode)
-            
+
                                         node = tx.merge(projectNode) 
                                         node = tx.merge(subjectNode) 
                                         node = tx.merge(kyvernoWhitelistNode) 
@@ -2010,13 +2611,43 @@ def run_collectors(
                                             print("Error:", e)
                                             sys.exit(1)
 
-            
+
+def _collect_validatingwebhookconfiguration(ctx):
+    """Collect ValidatingWebhookConfiguration resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## ValidatingWebhookConfiguration 
     ## 
     print(SECTION_HEADERS["validating_webhook_configuration"])
 
-    if "all" in collector or "validatingwebhookconfiguration" in collector:
+    if _should_collect(collector, "validatingwebhookconfiguration"):
         existing_count = graph.nodes.match("ValidatingWebhookConfiguration").count()
         if existing_count >= len(validatingWebhookConfiguration_list.items):
             print(f"⚠️ Database already has {existing_count} ValidatingWebhookConfiguration nodes, skipping import.")
@@ -2027,7 +2658,7 @@ def run_collectors(
                     config_name = getattr(enum.metadata, "name", None)
                     if not config_name:
                         continue
-                    
+
                     # ───────────────────────────────
                     # Create the parent Configuration node
                     # ───────────────────────────────
@@ -2151,12 +2782,42 @@ def run_collectors(
                                 sys.exit(1)
 
 
+def _collect_mutatingwebhookconfiguration(ctx):
+    """Collect MutatingWebhookConfiguration resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## MutatingWebhookConfiguration 
     ## 
     print(SECTION_HEADERS["mutating_webhook_configuration"])
 
-    if "all" in collector or "mutatingwebhookconfiguration" in collector:
+    if _should_collect(collector, "mutatingwebhookconfiguration"):
         existing_count = graph.nodes.match("MutatingWebhookConfiguration").count()
         if existing_count >= len(mutatingWebhookConfiguration_list.items):
             print(f"⚠️ Database already has {existing_count} MutatingWebhookConfiguration nodes, skipping import.")
@@ -2291,12 +2952,42 @@ def run_collectors(
                                 sys.exit(1)
 
 
+def _collect_clusterpolicy(ctx):
+    """Collect ClusterPolicy resources."""
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
     ##
     ## ClusterPolicy 
     ## 
     print(SECTION_HEADERS["cluster_policy"])
 
-    if "all" in collector or "clusterpolicies" in collector:
+    if _should_collect(collector, "clusterpolicies"):
         existing_count = graph.nodes.match("ClusterPolicy").count()
         if existing_count >= len(clusterPolicy_list.items):
             print(f"⚠️ Database already has {existing_count} ClusterPolicy nodes, skipping import.")
@@ -2420,3 +3111,4 @@ def run_collectors(
                             print(exc_type, fname, exc_tb.tb_lineno)
                             print("Error:", e)
                             sys.exit(1)
+
