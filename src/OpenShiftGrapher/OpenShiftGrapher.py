@@ -221,6 +221,58 @@ def main():
     print("Fetching ClusterPolicy")
     clusterPolicy_list, dyn_client, api_key = fetch_resource_with_refresh(dyn_client, api_key, hostApi, proxyUrl, "kyverno.io/v1", "ClusterPolicy")
 
+    # Build lookup tables for quick relationship resolution
+    project_by_name = {}
+    for item in getattr(project_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        name = getattr(metadata, "name", None) if metadata else None
+        if name:
+            project_by_name[name] = item
+
+    serviceaccount_by_ns_name = {}
+    for item in getattr(serviceAccount_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        namespace = getattr(metadata, "namespace", None) if metadata else None
+        name = getattr(metadata, "name", None) if metadata else None
+        if namespace and name:
+            serviceaccount_by_ns_name[(namespace, name)] = item
+
+    scc_by_name = {}
+    for item in getattr(SCC_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        name = getattr(metadata, "name", None) if metadata else None
+        if name:
+            scc_by_name[name] = item
+
+    role_by_ns_name = {}
+    for item in getattr(role_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        namespace = getattr(metadata, "namespace", None) if metadata else None
+        name = getattr(metadata, "name", None) if metadata else None
+        if namespace and name:
+            role_by_ns_name[(namespace, name)] = item
+
+    clusterrole_by_name = {}
+    for item in getattr(clusterrole_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        name = getattr(metadata, "name", None) if metadata else None
+        if name:
+            clusterrole_by_name[name] = item
+
+    user_by_name = {}
+    for item in getattr(user_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        name = getattr(metadata, "name", None) if metadata else None
+        if name:
+            user_by_name[name] = item
+
+    group_by_name = {}
+    for item in getattr(group_list, "items", []) or []:
+        metadata = getattr(item, "metadata", None)
+        name = getattr(metadata, "name", None) if metadata else None
+        if name:
+            group_by_name[name] = item
+
 
     ##
     ## OAuth
@@ -513,10 +565,7 @@ def main():
                         a.__primarylabel__ = "ServiceAccount"
                         a.__primarykey__ = "uid"
 
-                        target_project = next(
-                            (p for p in project_list.items if p.metadata.name == enum.metadata.namespace),
-                            None
-                        )
+                        target_project = project_by_name.get(enum.metadata.namespace)
 
                         if target_project:
                             projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
@@ -624,14 +673,16 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 else:
-                                    target_group = next(
-                                        (g for g in group_list.items if g.metadata.name == group),
-                                        None
-                                    )
-                                    
-                                    groupNode = Node("Group", name=target_group.metadata.name, uid=target_group.metadata.uid)
-                                    groupNode.__primarylabel__ = "Group"
-                                    groupNode.__primarykey__ = "uid"
+                                    target_group = group_by_name.get(group)
+
+                                    if target_group:
+                                        groupNode = Node("Group", name=target_group.metadata.name, uid=target_group.metadata.uid)
+                                        groupNode.__primarylabel__ = "Group"
+                                        groupNode.__primarykey__ = "uid"
+                                    else:
+                                        groupNode = Node("AbsentGroup", name=group, uid=group)
+                                        groupNode.__primarylabel__ = "AbsentGroup"
+                                        groupNode.__primarykey__ = "uid"
 
                                 # Create the SCC -> Group relationship
                                 tx = graph.begin()
@@ -662,32 +713,22 @@ def main():
                                     subjectName = split[3]
 
                                     if subjectNamespace:
-                                        try:
-                                            target_project = next(
-                                                (p for p in project_list.items if p.metadata.name == subjectNamespace),
-                                                None
-                                            )
+                                        target_project = project_by_name.get(subjectNamespace)
+                                        if target_project:
                                             projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                                             projectNode.__primarylabel__ = "Project"
                                             projectNode.__primarykey__ = "uid"
-
-                                        except: 
+                                        else:
                                             projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                             projectNode.__primarylabel__ = "AbsentProject"
                                             projectNode.__primarykey__ = "uid"
 
-                                        try:
-                                            target_sa = next(
-                                                (sa for sa in serviceAccount_list.items
-                                                if sa.metadata.name == subjectName
-                                                and sa.metadata.namespace == subjectNamespace),
-                                                None
-                                            )
+                                        target_sa = serviceaccount_by_ns_name.get((subjectNamespace, subjectName))
+                                        if target_sa:
                                             subjectNode = Node("ServiceAccount",name=target_sa.metadata.name, namespace=target_sa.metadata.namespace, uid=target_sa.metadata.uid)
                                             subjectNode.__primarylabel__ = "ServiceAccount"
                                             subjectNode.__primarykey__ = "uid"
-
-                                        except: 
+                                        else:
                                             subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                             subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                             subjectNode.__primarykey__ = "uid"
@@ -790,10 +831,7 @@ def main():
                         # ───────────────────────────────
                         # Link Role → Project
                         # ───────────────────────────────
-                        target_project = next(
-                            (p for p in project_list.items if p.metadata.name == namespace),
-                            None
-                        )
+                        target_project = project_by_name.get(namespace)
                         if target_project:
                             projectNode = Node("Project",
                                             name=target_project.metadata.name,
@@ -822,20 +860,13 @@ def main():
                                 for resource in resources:
                                     if resource == "securitycontextconstraints":
                                         for resourceName in getattr(rule, "resourceNames", []) or []:
-                                            try:
-                                                target_scc = next(
-                                                    (s for s in SCC_list.items if s.metadata.name == resourceName),
-                                                    None
-                                                )
-                                                if target_scc:
-                                                    sccNode = Node("SCC",
-                                                                name=target_scc.metadata.name,
-                                                                uid=target_scc.metadata.uid,
-                                                                exists=True)
-                                                else:
-                                                    raise ValueError("AbsentSCC")
-
-                                            except:
+                                            target_scc = scc_by_name.get(resourceName)
+                                            if target_scc:
+                                                sccNode = Node("SCC",
+                                                            name=target_scc.metadata.name,
+                                                            uid=target_scc.metadata.uid,
+                                                            exists=True)
+                                            else:
                                                 sccNode = Node("AbsentSCC",
                                                             name=resourceName,
                                                             uid=f"SCC_{resourceName}",
@@ -984,22 +1015,15 @@ def main():
                                 for resource in resources:
                                     if resource == "securitycontextconstraints":
                                         for resourceName in getattr(rule, "resourceNames", []) or []:
-                                            try:
-                                                target_scc = next(
-                                                    (s for s in SCC_list.items if s.metadata.name == resourceName),
-                                                    None
+                                            target_scc = scc_by_name.get(resourceName)
+                                            if target_scc:
+                                                sccNode = Node(
+                                                    "SCC",
+                                                    name=target_scc.metadata.name,
+                                                    uid=target_scc.metadata.uid,
+                                                    exists=True
                                                 )
-                                                if target_scc:
-                                                    sccNode = Node(
-                                                        "SCC",
-                                                        name=target_scc.metadata.name,
-                                                        uid=target_scc.metadata.uid,
-                                                        exists=True
-                                                    )
-                                                else:
-                                                    raise ValueError("AbsentSCC")
-
-                                            except:
+                                            else:
                                                 sccNode = Node(
                                                     "AbsentSCC",
                                                     name=resourceName,
@@ -1220,20 +1244,14 @@ def main():
                         # Link Group → Users
                         # ───────────────────────────────
                         for user_name in users:
-                            try:
-                                target_user = next(
-                                    (u for u in user_list.items if u.metadata.name == user_name),
-                                    None
+                            target_user = user_by_name.get(user_name)
+                            if target_user:
+                                userNode = Node(
+                                    "User",
+                                    name=target_user.metadata.name,
+                                    uid=target_user.metadata.uid
                                 )
-                                if target_user:
-                                    userNode = Node(
-                                        "User",
-                                        name=target_user.metadata.name,
-                                        uid=target_user.metadata.uid
-                                    )
-                                else:
-                                    raise ValueError("AbsentUser")
-                            except:
+                            else:
                                 userNode = Node(
                                     "AbsentUser",
                                     name=user_name,
@@ -1320,34 +1338,25 @@ def main():
                     rolebindingNode.__primarykey__ = "uid"
 
                     if roleKind == "ClusterRole":
-                        try:                            
-                            target_clusterroles = next(
-                                (p for p in clusterrole_list.items if p.metadata.name == roleName),
-                                None
-                            )
+                        target_clusterroles = clusterrole_by_name.get(roleName)
+                        if target_clusterroles:
                             roleNode = Node("ClusterRole",name=target_clusterroles.metadata.name, uid=target_clusterroles.metadata.uid)
                             roleNode.__primarylabel__ = "ClusterRole"
                             roleNode.__primarykey__ = "uid"
 
-                        except: 
+                        else:
                             roleNode = Node("AbsentClusterRole", name=roleName, uid=roleName)
                             roleNode.__primarylabel__ = "AbsentClusterRole"
                             roleNode.__primarykey__ = "uid"
 
                     elif roleKind == "Role":
-                        try:
-                            target_role = next(
-                                (
-                                    r for r in role_list.items
-                                    if r.metadata.name == roleName and r.metadata.namespace == enum.metadata.namespace
-                                ),
-                                None
-                            )
+                        target_role = role_by_ns_name.get((enum.metadata.namespace, roleName))
+                        if target_role:
                             roleNode = Node("Role",name=target_role.metadata.name, namespace=target_role.metadata.namespace, uid=target_role.metadata.uid)
                             roleNode.__primarylabel__ = "Role"
                             roleNode.__primarykey__ = "uid"
 
-                        except: 
+                        else:
                             roleNode = Node("AbsentRole",name=roleName, namespace=namespace, uid=roleName + "_" + namespace)
                             roleNode.__primarylabel__ = "AbsentRole"
                             roleNode.__primarykey__ = "uid"
@@ -1363,32 +1372,22 @@ def main():
 
                             if subjectKind == "ServiceAccount": 
                                 if subjectNamespace:
-                                    try:
-                                        target_project = next(
-                                            (p for p in project_list.items if p.metadata.name == subjectNamespace),
-                                            None
-                                        )
+                                    target_project = project_by_name.get(subjectNamespace)
+                                    if target_project:
                                         projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                                         projectNode.__primarylabel__ = "Project"
                                         projectNode.__primarykey__ = "uid"
-
-                                    except: 
+                                    else:
                                         projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                         projectNode.__primarylabel__ = "AbsentProject"
                                         projectNode.__primarykey__ = "uid"
 
-                                    try:
-                                        target_sa = next(
-                                            (sa for sa in serviceAccount_list.items
-                                            if sa.metadata.name == subjectName
-                                            and sa.metadata.namespace == subjectNamespace),
-                                            None
-                                        )
+                                    target_sa = serviceaccount_by_ns_name.get((subjectNamespace, subjectName))
+                                    if target_sa:
                                         subjectNode = Node("ServiceAccount",name=target_sa.metadata.name, namespace=target_sa.metadata.namespace, uid=target_sa.metadata.uid)
                                         subjectNode.__primarylabel__ = "ServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
-
-                                    except: 
+                                    else:
                                         subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                         subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
@@ -1427,16 +1426,13 @@ def main():
                                     namespace = subjectName.split(":")
                                     groupNamespace = namespace[2]
 
-                                    try:
-                                        target_project = next(
-                                            (p for p in project_list.items if p.metadata.name == groupNamespace),
-                                            None
-                                        )
+                                    target_project = project_by_name.get(groupNamespace)
+                                    if target_project:
                                         groupNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                                         groupNode.__primarylabel__ = "Project"
                                         groupNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         groupNode = Node("AbsentProject", name=groupNamespace, uid=groupNamespace)
                                         groupNode.__primarylabel__ = "AbsentProject"
                                         groupNode.__primarykey__ = "uid"
@@ -1447,16 +1443,13 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 else:
-                                    try:
-                                        target_group = next(
-                                            (g for g in group_list.items if g.metadata.name == subjectName),
-                                            None
-                                        )
+                                    target_group = group_by_name.get(subjectName)
+                                    if target_group:
                                         groupNode = Node("Group", name=target_group.metadata.name, uid=target_group.metadata.uid)
                                         groupNode.__primarylabel__ = "Group"
                                         groupNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         groupNode = Node("AbsentGroup", name=subjectName, uid=subjectName)
                                         groupNode.__primarylabel__ = "AbsentGroup"
                                         groupNode.__primarykey__ = "uid"
@@ -1486,18 +1479,15 @@ def main():
                                         print("Error:", e)
                                         sys.exit(1)
 
-                            elif subjectKind == "User": 
+                            elif subjectKind == "User":
 
-                                try:
-                                    target_user = next(
-                                        (p for p in user_list.items if p.metadata.name == subjectName),
-                                        None
-                                    )
+                                target_user = user_by_name.get(subjectName)
+                                if target_user:
                                     userNode = Node("User", name=target_user.metadata.name, uid=target_user.metadata.uid)
                                     userNode.__primarylabel__ = "User"
                                     userNode.__primarykey__ = "uid"
 
-                                except: 
+                                else:
                                     userNode = Node("AbsentUser", name=subjectName, uid=subjectName)
                                     userNode.__primarylabel__ = "AbsentUser"
                                     userNode.__primarykey__ = "uid"
@@ -1582,34 +1572,25 @@ def main():
                     clusterRolebindingNode.__primarykey__ = "uid"
 
                     if roleKind == "ClusterRole":
-                        try:
-                            target_clusterroles = next(
-                                (p for p in clusterrole_list.items if p.metadata.name == roleName),
-                                None
-                            )
+                        target_clusterroles = clusterrole_by_name.get(roleName)
+                        if target_clusterroles:
                             roleNode = Node("ClusterRole",name=target_clusterroles.metadata.name, uid=target_clusterroles.metadata.uid)
                             roleNode.__primarylabel__ = "ClusterRole"
                             roleNode.__primarykey__ = "uid"
 
-                        except: 
+                        else:
                             roleNode = Node("AbsentClusterRole",name=roleName, uid=roleName)
                             roleNode.__primarylabel__ = "AbsentClusterRole"
                             roleNode.__primarykey__ = "uid"
 
                     elif roleKind == "Role":
-                        try:
-                            target_role = next(
-                                (
-                                    r for r in role_list.items
-                                    if r.metadata.name == roleName and r.metadata.namespace == enum.metadata.namespace
-                                ),
-                                None
-                            )
+                        target_role = role_by_ns_name.get((enum.metadata.namespace, roleName))
+                        if target_role:
                             roleNode = Node("Role",name=target_role.metadata.name, namespace=target_role.metadata.namespace, uid=target_role.metadata.uid)
                             roleNode.__primarylabel__ = "Role"
                             roleNode.__primarykey__ = "uid"
 
-                        except: 
+                        else:
                             roleNode = Node("AbsentRole",name=roleName, namespace=namespace, uid=roleName+"_"+namespace)
                             roleNode.__primarylabel__ = "AbsentRole"
                             roleNode.__primarykey__ = "uid"
@@ -1620,34 +1601,26 @@ def main():
                             subjectName = subject.name
                             subjectNamespace = subject.namespace
 
-                            if subjectKind == "ServiceAccount": 
+                            if subjectKind == "ServiceAccount":
                                 if subjectNamespace:
-                                    try:
-                                        target_project = next(
-                                            (p for p in project_list.items if p.metadata.name == subjectNamespace),
-                                            None
-                                        )
+                                    target_project = project_by_name.get(subjectNamespace)
+                                    if target_project:
                                         projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                                         projectNode.__primarylabel__ = "Project"
                                         projectNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                         projectNode.__primarylabel__ = "AbsentProject"
                                         projectNode.__primarykey__ = "uid"
 
-                                    try:
-                                        target_sa = next(
-                                            (sa for sa in serviceAccount_list.items
-                                            if sa.metadata.name == subjectName
-                                            and sa.metadata.namespace == subjectNamespace),
-                                            None
-                                        )
+                                    target_sa = serviceaccount_by_ns_name.get((subjectNamespace, subjectName))
+                                    if target_sa:
                                         subjectNode = Node("ServiceAccount",name=target_sa.metadata.name, namespace=target_sa.metadata.namespace, uid=target_sa.metadata.uid)
                                         subjectNode.__primarylabel__ = "ServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                         subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
@@ -1686,16 +1659,13 @@ def main():
                                     namespace = subjectName.split(":")
                                     groupNamespace = namespace[2]
 
-                                    try:
-                                        target_project = next(
-                                            (p for p in project_list.items if p.metadata.name == groupNamespace),
-                                            None
-                                        )
+                                    target_project = project_by_name.get(groupNamespace)
+                                    if target_project:
                                         groupNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                                         groupNode.__primarylabel__ = "Project"
                                         groupNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         groupNode = Node("AbsentProject", name=groupNamespace, uid=groupNamespace)
                                         groupNode.__primarylabel__ = "AbsentProject"
                                         groupNode.__primarykey__ = "uid"
@@ -1706,16 +1676,13 @@ def main():
                                     groupNode.__primarykey__ = "uid"
 
                                 else:
-                                    try:
-                                        target_group = next(
-                                            (g for g in group_list.items if g.metadata.name == subjectName),
-                                            None
-                                        )
+                                    target_group = group_by_name.get(subjectName)
+                                    if target_group:
                                         groupNode = Node("Group", name=target_group.metadata.name, uid=target_group.metadata.uid)
                                         groupNode.__primarylabel__ = "Group"
                                         groupNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         groupNode = Node("AbsentGroup", name=subjectName, uid=subjectName)
                                         groupNode.__primarylabel__ = "AbsentGroup"
                                         groupNode.__primarykey__ = "uid"
@@ -1747,16 +1714,13 @@ def main():
 
                             elif subjectKind == "User": 
 
-                                try:
-                                    target_user = next(
-                                        (p for p in user_list.items if p.metadata.name == subjectName),
-                                        None
-                                    )
+                                target_user = user_by_name.get(subjectName)
+                                if target_user:
                                     userNode = Node("User", name=target_user.metadata.name, uid=target_user.metadata.uid)
                                     userNode.__primarylabel__ = "User"
                                     userNode.__primarykey__ = "uid"
 
-                                except: 
+                                else:
                                     userNode = Node("AbsentUser", name=subjectName, uid=subjectName)
                                     userNode.__primarylabel__ = "AbsentUser"
                                     userNode.__primarykey__ = "uid"
@@ -1853,10 +1817,7 @@ def main():
                     # ───────────────────────────────
                     # Project relationship
                     # ───────────────────────────────
-                    target_project = next(
-                        (p for p in project_list.items if p.metadata.name == namespace),
-                        None
-                    )
+                    target_project = project_by_name.get(namespace)
                     if target_project:
                         projectNode = Node(
                             "Project",
@@ -1931,16 +1892,13 @@ def main():
                     namespace = enum.metadata.namespace
                     uid = enum.metadata.uid
 
-                    try:
-                        target_project = next(
-                            (p for p in project_list.items if p.metadata.name == namespace),
-                            None
-                        )
+                    target_project = project_by_name.get(namespace)
+                    if target_project:
                         projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                         projectNode.__primarylabel__ = "Project"
                         projectNode.__primarykey__ = "uid"
 
-                    except: 
+                    else:
                         projectNode = Node("AbsentProject",name=namespace)
                         projectNode.__primarylabel__ = "AbsentProject"
                         projectNode.__primarykey__ = "name"
@@ -2048,16 +2006,13 @@ def main():
                     namespace = enum.metadata.namespace
                     uid = enum.metadata.uid
 
-                    try:
-                        target_project = next(
-                            (p for p in project_list.items if p.metadata.name == namespace),
-                            None
-                        )
+                    target_project = project_by_name.get(namespace)
+                    if target_project:
                         projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                         projectNode.__primarylabel__ = "Project"
                         projectNode.__primarykey__ = "uid"
 
-                    except: 
+                    else:
                         projectNode = Node("AbsentProject",name=namespace)
                         projectNode.__primarylabel__ = "AbsentProject"
                         projectNode.__primarykey__ = "name"
@@ -2138,32 +2093,24 @@ def main():
                                 subjectName = split[3]
 
                                 if subjectNamespace:
-                                    try:
-                                        target_project = next(
-                                            (p for p in project_list.items if p.metadata.name == subjectNamespace),
-                                            None
-                                        )
+                                    target_project = project_by_name.get(subjectNamespace)
+                                    if target_project:
                                         projectNode = Node("Project",name=target_project.metadata.name, uid=target_project.metadata.uid)
                                         projectNode.__primarylabel__ = "Project"
                                         projectNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
                                         projectNode.__primarylabel__ = "AbsentProject"
                                         projectNode.__primarykey__ = "uid"
 
-                                    try:
-                                        target_sa = next(
-                                            (sa for sa in serviceAccount_list.items
-                                            if sa.metadata.name == subjectName
-                                            and sa.metadata.namespace == subjectNamespace),
-                                            None
-                                        )
+                                    target_sa = serviceaccount_by_ns_name.get((subjectNamespace, subjectName))
+                                    if target_sa:
                                         subjectNode = Node("ServiceAccount",name=target_sa.metadata.name, namespace=target_sa.metadata.namespace, uid=target_sa.metadata.uid)
                                         subjectNode.__primarylabel__ = "ServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
 
-                                    except: 
+                                    else:
                                         subjectNode = Node("AbsentServiceAccount", name=subjectName, namespace=subjectNamespace, uid=subjectName+"_"+subjectNamespace)
                                         subjectNode.__primarylabel__ = "AbsentServiceAccount"
                                         subjectNode.__primarykey__ = "uid"
