@@ -955,10 +955,12 @@ def run_collectors(
     print(SECTION_HEADERS["user"])
 
     if "all" in collector or "user" in collector:
-        existing_count = graph.nodes.match("User").count()
-        if existing_count >= len(user_list.items):
-            print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
-        else:
+        # Users are already imported via Identity, but we need to access the risks
+        if True:
+        # existing_count = graph.nodes.match("User").count()
+        # if existing_count >= len(user_list.items):
+        #     print(f"⚠️ Database already has {existing_count} User nodes, skipping import.")
+        # else:
             with Bar('User', max=len(user_list.items)) as bar:
                 batch = 0
                 tx = graph.begin()
@@ -2096,9 +2098,9 @@ def run_collectors(
                         # Build rules summary (verbs, apiGroups, etc.)
                         rule_summaries = []
                         for rule in rules:
-                            apis = getattr(rule, "apiGroups", [])
-                            resources = getattr(rule, "resources", [])
-                            verbs = getattr(rule, "verbs", [])
+                            apis = getattr(rule, "apiGroups", None) or []
+                            resources = getattr(rule, "resources", None) or []
+                            verbs = getattr(rule, "verbs", None) or []
                             rule_summaries.append(f"APIs={apis} RES={resources} VERBS={verbs}")
                             if "*" in apis or "*" in resources or "*" in verbs:
                                 webhook_risk_tags.append("⚠️ wildcard rule scope")
