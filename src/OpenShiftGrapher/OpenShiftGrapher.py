@@ -18,6 +18,19 @@ from openshift.dynamic import DynamicClient
 from openshift.helper.userpassauth import OCPLoginConfiguration
 
 from progress.bar import Bar
+
+
+def format_risk_tags(tags, default="✅ baseline"):
+    """Return a human readable risk string while removing duplicates."""
+    seen = set()
+    ordered = []
+    for tag in tags:
+        if not tag:
+            continue
+        if tag not in seen:
+            ordered.append(tag)
+            seen.add(tag)
+    return ", ".join(ordered) if ordered else default
  
 
 def refresh_token():
@@ -223,7 +236,15 @@ def main():
                     for enum in oauth_list.items:
                         bar.next()
 
-                        oauthNode = Node("OAuth", name=enum.metadata.name)
+                        oauth_risk_tags = []
+                        if not getattr(enum.spec, "identityProviders", []):
+                            oauth_risk_tags.append("⚠️ no identity providers configured")
+
+                        oauthNode = Node(
+                            "OAuth",
+                            name=enum.metadata.name,
+                            risk=format_risk_tags(oauth_risk_tags)
+                        )
                         oauthNode.__primarylabel__ = "OAuth"
                         oauthNode.__primarykey__ = "name"
 
@@ -231,10 +252,21 @@ def main():
                         tx.merge(oauthNode)
 
                         for idp in getattr(enum.spec, "identityProviders", []):
-                            idpNode = Node("IdentityProvider",
-                                        name=idp.name,
-                                        type=idp.type,
-                                        mappingMethod=getattr(idp, "mappingMethod", "N/A"))
+                            idp_risk_tags = []
+                            provider_type = getattr(idp, "type", "").lower()
+                            mapping_method = getattr(idp, "mappingMethod", "N/A")
+                            if provider_type in {"basicauth", "htpasswd"}:
+                                idp_risk_tags.append("⚠️ password-based IdP")
+                            if mapping_method.lower() in {"add", "addloginprefix"}:
+                                idp_risk_tags.append("⚠️ mapping allows duplicates")
+
+                            idpNode = Node(
+                                "IdentityProvider",
+                                name=idp.name,
+                                type=idp.type,
+                                mappingMethod=mapping_method,
+                                risk=format_risk_tags(idp_risk_tags)
+                            )
                             idpNode.__primarylabel__ = "IdentityProvider"
                             idpNode.__primarykey__ = "name"
                             tx.merge(idpNode)
@@ -272,12 +304,20 @@ def main():
                     # ───────────────────────────────
                     # Identity node
                     # ───────────────────────────────
+                    identity_risk_tags = []
+                    if not linked_user:
+                        identity_risk_tags.append("⚠️ not linked to a user")
+
+                    if provider_name.lower().startswith("system:"):
+                        identity_risk_tags.append("⚠️ system identity")
+
                     identityNode = Node(
                         "Identity",
                         name=name,
                         provider=provider_name,
                         providerUser=provider_user,
-                        linkedUser=linked_user
+                        linkedUser=linked_user,
+                        risk=format_risk_tags(identity_risk_tags)
                     )
                     identityNode.__primarylabel__ = "Identity"
                     identityNode.__primarykey__ = "name"
@@ -369,6 +409,15 @@ def main():
                         isSystem = name.startswith("openshift") or name.startswith("kube-")
 
                         # ───────────────────────────────
+                        # Determine risk markers
+                        risk_tags = []
+                        if isSystem:
+                            risk_tags.append("⚠️ system namespace")
+                        if requester is None:
+                            risk_tags.append("⚠️ missing requester")
+                        if phase and phase.lower() != "active":
+                            risk_tags.append(f"⚠️ phase={phase}")
+
                         # Create Project node
                         # ───────────────────────────────
                         tx = graph.begin()
@@ -384,7 +433,8 @@ def main():
                             created=created,
                             phase=phase,
                             isSystem=isSystem,
-                            annotations=str(annotations)  # keep full annotations dict as string
+                            annotations=str(annotations),  # keep full annotations dict as string
+                            risk=format_risk_tags(risk_tags)
                         )
                         a.__primarylabel__ = "Project"
                         a.__primarykey__ = "uid"
@@ -433,6 +483,17 @@ def main():
                         automount = getattr(enum, "automountServiceAccountToken", None)
 
                         # ───────────────────────────────
+                        # Determine risk markers
+                        risk_tags = []
+                        if automount is None or automount:
+                            risk_tags.append("⚠️ token automount enabled")
+                        if any("dockercfg" in secret for secret in secrets):
+                            risk_tags.append("⚠️ legacy dockercfg secret")
+                        if name == "default":
+                            risk_tags.append("⚠️ default service account")
+                        if namespace and namespace.startswith("openshift"):
+                            risk_tags.append("⚠️ operates in system namespace")
+
                         # Create SA node
                         # ───────────────────────────────
                         tx = graph.begin()
@@ -446,7 +507,8 @@ def main():
                             imagePullSecrets=",".join(imagePullSecrets),
                             created=created,
                             annotations=str(annotations),
-                            labels=str(labels)
+                            labels=str(labels),
+                            risk=format_risk_tags(risk_tags)
                         )
                         a.__primarylabel__ = "ServiceAccount"
                         a.__primarykey__ = "uid"
@@ -499,16 +561,38 @@ def main():
                     bar.next()
 
                     try:
-                        isPriv = scc.allowPrivilegedContainer
+                        isPriv = getattr(scc, "allowPrivilegedContainer", False)
+                        risk_tags = []
+                        if isPriv:
+                            risk_tags.append("⚠️ allows privileged containers")
+                        if getattr(scc, "allowHostNetwork", False):
+                            risk_tags.append("⚠️ allows host network")
+                        if getattr(scc, "allowHostPID", False):
+                            risk_tags.append("⚠️ shares host PID")
+                        if getattr(scc, "allowHostIPC", False):
+                            risk_tags.append("⚠️ shares host IPC")
+
+                        run_as_user = getattr(scc, "runAsUser", None)
+                        if run_as_user and getattr(run_as_user, "type", "").lower() == "runasany":
+                            risk_tags.append("⚠️ runAsUser=RunAsAny")
+
+                        fs_group = getattr(scc, "fsGroup", None)
+                        if fs_group and getattr(fs_group, "type", "").lower() == "runasany":
+                            risk_tags.append("⚠️ fsGroup=RunAsAny")
+
+                        se_linux = getattr(scc, "seLinuxContext", None)
+                        if se_linux and getattr(se_linux, "type", "").lower() == "runasany":
+                            risk_tags.append("⚠️ seLinux=RunAsAny")
 
                         tx = graph.begin()
-                        sccNode = Node("SCC",name=scc.metadata.name, 
-                            uid=scc.metadata.uid, 
-                            allowPrivilegeEscalation=scc.allowPrivilegedContainer,
-                            allowHostNetwork=scc.allowHostNetwork,
-                            allowHostPID=scc.allowHostPID,
-                            allowHostIPC=scc.allowHostIPC,
-                            priority=scc.priority if hasattr(scc, "priority") else None,
+                        sccNode = Node("SCC",name=scc.metadata.name,
+                            uid=scc.metadata.uid,
+                            allowPrivilegeEscalation=getattr(scc, "allowPrivilegedContainer", None),
+                            allowHostNetwork=getattr(scc, "allowHostNetwork", None),
+                            allowHostPID=getattr(scc, "allowHostPID", None),
+                            allowHostIPC=getattr(scc, "allowHostIPC", None),
+                            priority=getattr(scc, "priority", None) if hasattr(scc, "priority") else None,
+                            risk=format_risk_tags(risk_tags)
                         )
                         sccNode.__primarylabel__ = "SCC"
                         sccNode.__primarykey__ = "uid"
@@ -661,21 +745,30 @@ def main():
                         # ───────────────────────────────
                         # Detect privilege escalation
                         # ───────────────────────────────
-                        privileged_keywords = [
-                            "pods/exec", "pods/attach", "secrets", "configmaps",
-                            "pods/portforward", "serviceaccounts", "securitycontextconstraints"
-                        ]
-                        dangerous_verbs = ["create", "update", "patch", "delete", "*"]
-                        risk_flag = "✅ normal"
+                        dangerous_verbs = {"create", "update", "patch", "delete", "*", "impersonate", "bind"}
+                        risk_tags = []
 
                         for rule in getattr(role, "rules", []) or []:
                             verbs = getattr(rule, "verbs", []) or []
                             resources = getattr(rule, "resources", []) or []
-                            for v in verbs:
-                                for r in resources:
-                                    if any(dv in v for dv in dangerous_verbs) and any(pk in r for pk in privileged_keywords):
-                                        risk_flag = "⚠️ potential privilege escalation"
-                                        break
+                            api_groups = getattr(rule, "apiGroups", []) or []
+                            if "*" in verbs:
+                                risk_tags.append("⚠️ wildcard verbs")
+                            if "*" in resources:
+                                risk_tags.append("⚠️ wildcard resources")
+                            if "*" in api_groups:
+                                risk_tags.append("⚠️ wildcard API groups")
+
+                            for verb in verbs:
+                                for resource in resources:
+                                    if resource in {"secrets", "configmaps"} and verb in dangerous_verbs:
+                                        risk_tags.append("⚠️ can modify secrets/configmaps")
+                                    if resource == "serviceaccounts" and verb in dangerous_verbs:
+                                        risk_tags.append("⚠️ can modify serviceaccounts")
+                                    if resource == "securitycontextconstraints" and verb.lower() in {"use", "*"}:
+                                        risk_tags.append("⚠️ can use SCC")
+                                    if resource.startswith("pods/") and verb in dangerous_verbs:
+                                        risk_tags.append("⚠️ pod exec/attach rights")
 
                         # ───────────────────────────────
                         # Create Role node
@@ -688,7 +781,7 @@ def main():
                             created=created,
                             annotations=str(annotations),
                             labels=str(labels),
-                            risk=risk_flag
+                            risk=format_risk_tags(risk_tags, default="✅ normal")
                         )
                         roleNode.__primarylabel__ = "Role"
                         roleNode.__primarykey__ = "uid"
@@ -708,7 +801,7 @@ def main():
                             projectNode.__primarylabel__ = "Project"
                             projectNode.__primarykey__ = "uid"
                         else:
-                            projectNode = Node("AbsentProject", name=subjectNamespace, uid=subjectNamespace)
+                            projectNode = Node("AbsentProject", name=namespace, uid=namespace)
                             projectNode.__primarylabel__ = "AbsentProject"
                             projectNode.__primarykey__ = "uid"
                         
@@ -832,21 +925,34 @@ def main():
                         # ───────────────────────────────
                         # Privilege escalation detection
                         # ───────────────────────────────
-                        privileged_keywords = [
-                            "pods/exec", "pods/attach", "secrets", "configmaps",
-                            "pods/portforward", "serviceaccounts", "securitycontextconstraints"
-                        ]
-                        dangerous_verbs = ["create", "update", "patch", "delete", "*"]
-                        risk_flag = "✅ normal"
+                        dangerous_verbs = {"create", "update", "patch", "delete", "*", "impersonate", "bind"}
+                        risk_tags = []
+
+                        aggregation_rule = getattr(role, "aggregationRule", None)
+                        if aggregation_rule and getattr(aggregation_rule, "clusterRoleSelectors", None):
+                            risk_tags.append("⚠️ aggregated cluster role")
 
                         for rule in getattr(role, "rules", []) or []:
                             verbs = getattr(rule, "verbs", []) or []
                             resources = getattr(rule, "resources", []) or []
-                            for v in verbs:
-                                for r in resources:
-                                    if any(dv in v for dv in dangerous_verbs) and any(pk in r for pk in privileged_keywords):
-                                        risk_flag = "⚠️ potential privilege escalation"
-                                        break
+                            api_groups = getattr(rule, "apiGroups", []) or []
+                            if "*" in verbs:
+                                risk_tags.append("⚠️ wildcard verbs")
+                            if "*" in resources:
+                                risk_tags.append("⚠️ wildcard resources")
+                            if "*" in api_groups:
+                                risk_tags.append("⚠️ wildcard API groups")
+
+                            for verb in verbs:
+                                for resource in resources:
+                                    if resource in {"secrets", "configmaps"} and verb in dangerous_verbs:
+                                        risk_tags.append("⚠️ can modify secrets/configmaps")
+                                    if resource == "serviceaccounts" and verb in dangerous_verbs:
+                                        risk_tags.append("⚠️ can modify serviceaccounts")
+                                    if resource == "securitycontextconstraints" and verb.lower() in {"use", "*"}:
+                                        risk_tags.append("⚠️ can use SCC")
+                                    if resource.startswith("pods/") and verb in dangerous_verbs:
+                                        risk_tags.append("⚠️ pod exec/attach rights")
 
                         # ───────────────────────────────
                         # Create ClusterRole node
@@ -858,7 +964,7 @@ def main():
                             created=created,
                             annotations=str(annotations),
                             labels=str(labels),
-                            risk=risk_flag
+                            risk=format_risk_tags(risk_tags, default="✅ normal")
                         )
                         roleNode.__primarylabel__ = "ClusterRole"
                         roleNode.__primarykey__ = "uid"
@@ -989,12 +1095,13 @@ def main():
                         # ───────────────────────────────
                         # Risk detection
                         # ───────────────────────────────
+                        user_risk_tags = []
                         if name.startswith("system:"):
-                            risk_flag = "⚠️ system account"
-                        elif name in ["kube:admin", "admin"]:
-                            risk_flag = "⚠️ cluster administrator"
-                        else:
-                            risk_flag = "✅ normal"
+                            user_risk_tags.append("⚠️ system account")
+                        if name in ["kube:admin", "admin", "system:admin"]:
+                            user_risk_tags.append("⚠️ cluster administrator")
+                        if not identities:
+                            user_risk_tags.append("⚠️ no linked identities")
 
                         # ───────────────────────────────
                         # Create User node
@@ -1006,7 +1113,7 @@ def main():
                             created=created,
                             annotations=str(annotations),
                             labels=str(labels),
-                            risk=risk_flag
+                            risk=format_risk_tags(user_risk_tags, default="✅ normal")
                         )
                         userNode.__primarylabel__ = "User"
                         userNode.__primarykey__ = "uid"
@@ -1083,14 +1190,15 @@ def main():
                         # ───────────────────────────────
                         # Risk detection
                         # ───────────────────────────────
+                        group_risk_tags = []
                         if name.startswith("system:authenticated"):
-                            risk_flag = "⚠️ all authenticated users"
-                        elif name.startswith("system:unauthenticated"):
-                            risk_flag = "⚠️ unauthenticated group"
-                        elif name.startswith("system:"):
-                            risk_flag = "⚠️ system group"
-                        else:
-                            risk_flag = "✅ normal"
+                            group_risk_tags.append("⚠️ all authenticated users")
+                        if name.startswith("system:unauthenticated"):
+                            group_risk_tags.append("⚠️ unauthenticated group")
+                        if name.startswith("system:") and not group_risk_tags:
+                            group_risk_tags.append("⚠️ system group")
+                        if not users:
+                            group_risk_tags.append("⚠️ no direct members")
 
                         # ───────────────────────────────
                         # Create Group node
@@ -1102,7 +1210,7 @@ def main():
                             created=created,
                             annotations=str(annotations),
                             labels=str(labels),
-                            risk=risk_flag
+                            risk=format_risk_tags(group_risk_tags, default="✅ normal")
                         )
                         groupNode.__primarylabel__ = "Group"
                         groupNode.__primarykey__ = "uid"
@@ -1182,12 +1290,34 @@ def main():
                     uid = enum.metadata.uid
                     namespace = enum.metadata.namespace
 
-                    rolebindingNode = Node("RoleBinding", name=name, namespace=namespace, uid=enum.metadata.uid)
-                    rolebindingNode.__primarylabel__ = "RoleBinding"
-                    rolebindingNode.__primarykey__ = "uid"
-
                     roleKind = enum.roleRef.kind
                     roleName = enum.roleRef.name
+                    subjects = list(enum.subjects or [])
+
+                    risk_tags = []
+                    high_priv_roles = {"cluster-admin", "system:masters", "system:admin"}
+                    if roleKind == "ClusterRole" and roleName in high_priv_roles:
+                        risk_tags.append("⚠️ grants cluster-admin access")
+                    if not subjects:
+                        risk_tags.append("⚠️ no subjects bound")
+
+                    for subject in subjects:
+                        subjectKind = getattr(subject, "kind", "")
+                        subjectName = getattr(subject, "name", "")
+                        if subjectKind == "Group" and subjectName in {"system:authenticated", "system:unauthenticated"}:
+                            risk_tags.append(f"⚠️ binds {subjectName}")
+                        if subjectKind == "ServiceAccount" and subjectName == "default":
+                            risk_tags.append("⚠️ default service account escalation")
+
+                    rolebindingNode = Node(
+                        "RoleBinding",
+                        name=name,
+                        namespace=namespace,
+                        uid=enum.metadata.uid,
+                        risk=format_risk_tags(risk_tags, default="✅ normal")
+                    )
+                    rolebindingNode.__primarylabel__ = "RoleBinding"
+                    rolebindingNode.__primarykey__ = "uid"
 
                     if roleKind == "ClusterRole":
                         try:                            
@@ -1222,8 +1352,8 @@ def main():
                             roleNode.__primarylabel__ = "AbsentRole"
                             roleNode.__primarykey__ = "uid"
 
-                    if enum.subjects:
-                        for subject in enum.subjects:
+                    if subjects:
+                        for subject in subjects:
                             subjectKind = subject.kind
                             subjectName = subject.name
                             subjectNamespace = subject.namespace
@@ -1420,12 +1550,36 @@ def main():
                     uid = enum.metadata.uid
                     namespace = enum.metadata.namespace
 
-                    clusterRolebindingNode = Node("ClusterRoleBinding", name=name, namespace=namespace, uid=uid)
-                    clusterRolebindingNode.__primarylabel__ = "ClusterRoleBinding"
-                    clusterRolebindingNode.__primarykey__ = "uid"
-
                     roleKind = enum.roleRef.kind
                     roleName = enum.roleRef.name
+                    subjects = list(enum.subjects or [])
+
+                    risk_tags = []
+                    high_priv_roles = {"cluster-admin", "system:masters", "system:admin"}
+                    if roleKind == "ClusterRole" and roleName in high_priv_roles:
+                        risk_tags.append("⚠️ grants cluster-admin access")
+                    if not subjects:
+                        risk_tags.append("⚠️ no subjects bound")
+
+                    for subject in subjects:
+                        subjectKind = getattr(subject, "kind", "")
+                        subjectName = getattr(subject, "name", "")
+                        if subjectKind == "Group" and subjectName in {"system:authenticated", "system:unauthenticated"}:
+                            risk_tags.append(f"⚠️ binds {subjectName}")
+                        if subjectKind == "User" and subjectName in {"kube:admin", "system:admin"}:
+                            risk_tags.append("⚠️ admin user bound")
+                        if subjectKind == "ServiceAccount" and subjectName == "default":
+                            risk_tags.append("⚠️ default service account escalation")
+
+                    clusterRolebindingNode = Node(
+                        "ClusterRoleBinding",
+                        name=name,
+                        namespace=namespace,
+                        uid=uid,
+                        risk=format_risk_tags(risk_tags, default="✅ normal")
+                    )
+                    clusterRolebindingNode.__primarylabel__ = "ClusterRoleBinding"
+                    clusterRolebindingNode.__primarykey__ = "uid"
 
                     if roleKind == "ClusterRole":
                         try:
@@ -1460,8 +1614,8 @@ def main():
                             roleNode.__primarylabel__ = "AbsentRole"
                             roleNode.__primarykey__ = "uid"
 
-                    if enum.subjects:
-                        for subject in enum.subjects:
+                    if subjects:
+                        for subject in subjects:
                             subjectKind = subject.kind
                             subjectName = subject.name
                             subjectNamespace = subject.namespace
@@ -1791,7 +1945,67 @@ def main():
                         projectNode.__primarylabel__ = "AbsentProject"
                         projectNode.__primarykey__ = "name"
 
-                    podNode = Node("Pod",name=name, namespace=namespace, uid=uid)
+                    pod_spec = getattr(enum, "spec", None)
+                    pod_status = getattr(enum, "status", None)
+                    service_account = getattr(pod_spec, "serviceAccountName", None) if pod_spec else None
+                    host_network = getattr(pod_spec, "hostNetwork", False) if pod_spec else False
+                    host_pid = getattr(pod_spec, "hostPID", False) if pod_spec else False
+                    host_ipc = getattr(pod_spec, "hostIPC", False) if pod_spec else False
+
+                    risk_tags = []
+                    if host_network:
+                        risk_tags.append("⚠️ hostNetwork enabled")
+                    if host_pid:
+                        risk_tags.append("⚠️ hostPID enabled")
+                    if host_ipc:
+                        risk_tags.append("⚠️ hostIPC enabled")
+
+                    containers = list(getattr(pod_spec, "containers", []) or []) if pod_spec else []
+                    images = []
+                    for container in containers:
+                        image = getattr(container, "image", None)
+                        if image:
+                            images.append(image)
+                            if ":" not in image or image.endswith(":latest"):
+                                risk_tags.append(f"⚠️ floating image tag ({image})")
+
+                        security_context = getattr(container, "security_context", None)
+                        if not security_context:
+                            security_context = getattr(container, "securityContext", None)
+                        if security_context:
+                            if getattr(security_context, "privileged", False):
+                                risk_tags.append("⚠️ privileged container")
+                            if getattr(security_context, "allow_privilege_escalation", False):
+                                risk_tags.append("⚠️ allows privilege escalation")
+                            run_as_user = getattr(security_context, "run_as_user", None)
+                            if run_as_user in (0, "0"):
+                                risk_tags.append("⚠️ runs as root")
+
+                    volumes = list(getattr(pod_spec, "volumes", []) or []) if pod_spec else []
+                    for volume in volumes:
+                        host_path = getattr(volume, "host_path", None)
+                        if not host_path:
+                            host_path = getattr(volume, "hostPath", None)
+                        if host_path:
+                            risk_tags.append("⚠️ hostPath volume")
+
+                    phase = getattr(pod_status, "phase", None)
+                    if phase and phase.lower() not in {"running", "succeeded"}:
+                        risk_tags.append(f"⚠️ phase={phase}")
+
+                    podNode = Node(
+                        "Pod",
+                        name=name,
+                        namespace=namespace,
+                        uid=uid,
+                        serviceAccount=service_account,
+                        hostNetwork=host_network,
+                        hostPID=host_pid,
+                        hostIPC=host_ipc,
+                        images=",".join(images),
+                        phase=phase,
+                        risk=format_risk_tags(risk_tags)
+                    )
                     podNode.__primarylabel__ = "Pod"
                     podNode.__primarykey__ = "uid"
 
@@ -1848,7 +2062,26 @@ def main():
                         projectNode.__primarylabel__ = "AbsentProject"
                         projectNode.__primarykey__ = "name"
 
-                    configmapNode = Node("ConfigMap",name=name, namespace=namespace, uid=uid)
+                    data = getattr(enum, "data", {}) or {}
+                    binary_data = getattr(enum, "binaryData", {}) or {}
+                    immutable = getattr(enum, "immutable", False)
+
+                    risk_tags = []
+                    sensitive_markers = {"password", "token", "secret", "key", "cert"}
+                    for key in list(data.keys()) + list(binary_data.keys()):
+                        if any(marker in key.lower() for marker in sensitive_markers):
+                            risk_tags.append(f"⚠️ sensitive key '{key}'")
+                    if not immutable and risk_tags:
+                        risk_tags.append("⚠️ mutable sensitive data")
+
+                    configmapNode = Node(
+                        "ConfigMap",
+                        name=name,
+                        namespace=namespace,
+                        uid=uid,
+                        immutable=immutable,
+                        risk=format_risk_tags(risk_tags)
+                    )
                     configmapNode.__primarylabel__ = "ConfigMap"
                     configmapNode.__primarykey__ = "uid"
 
@@ -1936,7 +2169,12 @@ def main():
                                         subjectNode.__primarykey__ = "uid"
 
                                     try:
-                                        kyvernoWhitelistNode = Node("KyvernoWhitelist", name="KyvernoWhitelist", uid="KyvernoWhitelist")
+                                        kyvernoWhitelistNode = Node(
+                                            "KyvernoWhitelist",
+                                            name="KyvernoWhitelist",
+                                            uid="KyvernoWhitelist",
+                                            risk=format_risk_tags(["⚠️ bypasses Kyverno policies"])
+                                        )
                                         kyvernoWhitelistNode.__primarylabel__ = "KyvernoWhitelist"
                                         kyvernoWhitelistNode.__primarykey__ = "uid"
 
@@ -1984,10 +2222,16 @@ def main():
                     # ───────────────────────────────
                     # Create the parent Configuration node
                     # ───────────────────────────────
+                    webhooks = list(getattr(enum, "webhooks", []) or [])
+                    cfg_risk_tags = []
+                    if not webhooks:
+                        cfg_risk_tags.append("⚠️ no webhooks configured")
+
                     cfgNode = Node(
                         "ValidatingWebhookConfiguration",
                         name=config_name,
-                        uid=getattr(enum.metadata, "uid", config_name)
+                        uid=getattr(enum.metadata, "uid", config_name),
+                        risk=format_risk_tags(cfg_risk_tags)
                     )
                     cfgNode.__primarylabel__ = "ValidatingWebhookConfiguration"
                     cfgNode.__primarykey__ = "uid"
@@ -1999,7 +2243,6 @@ def main():
                     # ───────────────────────────────
                     # Handle each webhook under it
                     # ───────────────────────────────
-                    webhooks = getattr(enum, "webhooks", [])
                     for webhook in webhooks:
                         webhook_name = getattr(webhook, "name", "unknown-webhook")
 
@@ -2010,6 +2253,16 @@ def main():
                         admission_review_versions = getattr(webhook, "admissionReviewVersions", None)
                         rules = getattr(webhook, "rules", [])
                         client_config = getattr(webhook, "clientConfig", None)
+
+                        webhook_risk_tags = []
+                        if failure_policy and failure_policy.lower() == "ignore":
+                            webhook_risk_tags.append("⚠️ failurePolicy=Ignore")
+                        if not getattr(webhook, "namespaceSelector", None):
+                            webhook_risk_tags.append("⚠️ cluster-wide scope")
+                        if side_effects and side_effects.lower() in {"some", "unknown"}:
+                            webhook_risk_tags.append(f"⚠️ sideEffects={side_effects}")
+                        if timeout and timeout > 10:
+                            webhook_risk_tags.append(f"⚠️ long timeout ({timeout}s)")
 
                         # Extract namespace selector (if any)
                         ns_selector = getattr(webhook, "namespaceSelector", None)
@@ -2040,6 +2293,8 @@ def main():
                             resources = getattr(rule, "resources", [])
                             verbs = getattr(rule, "verbs", [])
                             rule_summaries.append(f"APIs={apis} RES={resources} VERBS={verbs}")
+                            if "*" in apis or "*" in resources or "*" in verbs:
+                                webhook_risk_tags.append("⚠️ wildcard rule scope")
                         rules_str = "; ".join(rule_summaries) if rule_summaries else "None"
 
                         # Optional: capture client service reference
@@ -2062,6 +2317,7 @@ def main():
                                 objectSelector=obj_str,
                                 rules=rules_str,
                                 serviceRef=svc_ref,
+                                risk=format_risk_tags(webhook_risk_tags)
                             )
                             validatingWebhookNode.__primarylabel__ = "ValidatingWebhook"
                             validatingWebhookNode.__primarykey__ = "uid"
@@ -2106,10 +2362,16 @@ def main():
                     # ───────────────────────────────
                     # Create parent configuration node
                     # ───────────────────────────────
+                    webhooks = list(getattr(enum, "webhooks", []) or [])
+                    cfg_risk_tags = []
+                    if not webhooks:
+                        cfg_risk_tags.append("⚠️ no webhooks configured")
+
                     cfgNode = Node(
                         "MutatingWebhookConfiguration",
                         name=config_name,
                         uid=getattr(enum.metadata, "uid", config_name),
+                        risk=format_risk_tags(cfg_risk_tags)
                     )
                     cfgNode.__primarylabel__ = "MutatingWebhookConfiguration"
                     cfgNode.__primarykey__ = "uid"
@@ -2121,7 +2383,6 @@ def main():
                     # ───────────────────────────────
                     # Iterate through webhooks
                     # ───────────────────────────────
-                    webhooks = getattr(enum, "webhooks", [])
                     for webhook in webhooks:
                         webhook_name = getattr(webhook, "name", "unknown-webhook")
                         failure_policy = getattr(webhook, "failurePolicy", None)
@@ -2130,6 +2391,16 @@ def main():
                         admission_review_versions = getattr(webhook, "admissionReviewVersions", None)
                         reinvocation_policy = getattr(webhook, "reinvocationPolicy", None)
                         match_policy = getattr(webhook, "matchPolicy", None)
+
+                        webhook_risk_tags = []
+                        if failure_policy and failure_policy.lower() == "ignore":
+                            webhook_risk_tags.append("⚠️ failurePolicy=Ignore")
+                        if side_effects and side_effects.lower() in {"some", "unknown"}:
+                            webhook_risk_tags.append(f"⚠️ sideEffects={side_effects}")
+                        if timeout and timeout > 10:
+                            webhook_risk_tags.append(f"⚠️ long timeout ({timeout}s)")
+                        if match_policy and match_policy.lower() == "exact":
+                            webhook_risk_tags.append("⚠️ matchPolicy=Exact (may miss objects)")
 
                         # Namespace selector
                         ns_selector = getattr(webhook, "namespaceSelector", None)
@@ -2162,6 +2433,8 @@ def main():
                             verbs = getattr(rule, "verbs", [])
                             operations = getattr(rule, "operations", [])
                             rule_summaries.append(f"APIs={apis} RES={resources} OPS={operations} VERBS={verbs}")
+                            if "*" in apis or "*" in resources or "*" in operations:
+                                webhook_risk_tags.append("⚠️ wildcard rule scope")
                         rules_str = "; ".join(rule_summaries) if rule_summaries else "None"
 
                         # Service reference
@@ -2186,6 +2459,7 @@ def main():
                                 objectSelector=obj_str,
                                 rules=rules_str,
                                 serviceRef=svc_ref,
+                                risk=format_risk_tags(webhook_risk_tags)
                             )
                             webhookNode.__primarylabel__ = "MutatingWebhook"
                             webhookNode.__primarykey__ = "uid"
@@ -2230,6 +2504,14 @@ def main():
                     background = getattr(spec, "background", None)
                     validationFailureActionOverrides = getattr(spec, "validationFailureActionOverrides", None)
 
+                    policy_risk_tags = []
+                    if enforcement and str(enforcement).lower() != "enforce":
+                        policy_risk_tags.append(f"⚠️ enforcement={enforcement}")
+                    if background is False:
+                        policy_risk_tags.append("⚠️ background scanning disabled")
+                    if validationFailureActionOverrides:
+                        policy_risk_tags.append("⚠️ overrides weaken enforcement")
+
                     try:
                         # Create ClusterPolicy node
                         cpNode = Node(
@@ -2239,6 +2521,7 @@ def main():
                             enforcement=enforcement,
                             background=background,
                             overrides=str(validationFailureActionOverrides),
+                            risk=format_risk_tags(policy_risk_tags)
                         )
                         cpNode.__primarylabel__ = "ClusterPolicy"
                         cpNode.__primarykey__ = "uid"
@@ -2267,12 +2550,23 @@ def main():
                             message = getattr(getattr(rule, "validate", {}), "message", None)
                             patch = getattr(getattr(rule, "mutate", {}), "patchStrategicMerge", None)
 
+                            rule_risk_tags = []
+                            if rule_type == "mutate":
+                                rule_risk_tags.append("⚠️ mutates resources")
+                            if rule_type == "generate":
+                                rule_risk_tags.append("⚠️ generates resources")
+                            if rule_type == "validate" and not pattern:
+                                rule_risk_tags.append("⚠️ validate without pattern")
+
                             # Extract matched resources
                             match_kinds = []
                             try:
                                 match_kinds = getattr(match["resources"], "kinds", [])
                             except Exception:
                                 pass
+
+                            if match_kinds and any(kind.lower() == "pod" for kind in match_kinds):
+                                rule_risk_tags.append("⚠️ targets Pods")
 
                             try:
                                 policyRuleNode = Node(
@@ -2285,6 +2579,7 @@ def main():
                                     pattern=str(pattern),
                                     patch=str(patch),
                                     exclude=str(exclude),
+                                    risk=format_risk_tags(rule_risk_tags)
                                 )
                                 policyRuleNode.__primarylabel__ = "PolicyRule"
                                 policyRuleNode.__primarykey__ = "uid"
