@@ -1,8 +1,10 @@
 """CLI entry point for the OpenShift Grapher collectors."""
 
 import argparse
+import json
 from argparse import RawTextHelpFormatter
-from typing import Sequence
+from pathlib import Path
+from typing import Any, Sequence
 
 import urllib3
 from kubernetes import client
@@ -106,6 +108,39 @@ def normalise_collectors(collector: str | Sequence[str]) -> list[str]:
     return [item.lower() for item in collector]
 
 
+def _json_default(obj: Any) -> Any:
+    """Fallback serializer for objects that are not JSON serializable by default."""
+    if hasattr(obj, "to_dict") and callable(obj.to_dict):
+        return obj.to_dict()
+    if isinstance(obj, set):
+        return sorted(obj)
+    return str(obj)
+
+
+def backup_resource_data(
+    output_directory: Path,
+    resources: dict[str, Any],
+    kyverno_logs: dict[str, str],
+) -> None:
+    """Persist fetched resource data to JSON files inside *output_directory*."""
+
+    output_directory.mkdir(parents=True, exist_ok=True)
+    for resource_name, resource_content in resources.items():
+        resource_path = output_directory / f"{resource_name}.json"
+        serialisable_content = (
+            resource_content.to_dict()
+            if hasattr(resource_content, "to_dict") and callable(resource_content.to_dict)
+            else resource_content
+        )
+        with resource_path.open("w", encoding="utf-8") as resource_file:
+            json.dump(serialisable_content, resource_file, indent=2, default=_json_default)
+
+    if kyverno_logs:
+        kyverno_path = output_directory / "kyverno_logs.json"
+        with kyverno_path.open("w", encoding="utf-8") as kyverno_file:
+            json.dump(kyverno_logs, kyverno_file, indent=2, default=_json_default)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -133,6 +168,11 @@ def main() -> None:
     parser.add_argument('-p', '--passwordNeo4j', default=DEFAULT_NEO4J_PASSWORD, help='neo4j database password.')
     parser.add_argument('-x', '--proxyUrl', default="", help='proxy url.')
     parser.add_argument('-d', '--databaseName', default=DEFAULT_DATABASE_NAME, help='Database Name.')
+    parser.add_argument(
+        '--backupResources',
+        action='store_true',
+        help='Backup fetched resources into files named after the database.',
+    )
 
     args = parser.parse_args()
 
@@ -144,6 +184,7 @@ def main() -> None:
     collector = args.collector
     proxy_url = args.proxyUrl
     database_name = args.databaseName
+    backup_resources_enabled = args.backupResources
 
     release = True
 
@@ -267,6 +308,29 @@ def main() -> None:
     cluster_policy_list, dyn_client, api_key = fetch_resource_with_refresh(
         dyn_client, api_key, host_api, proxy_url, 'kyverno.io/v1', 'ClusterPolicy'
     )
+
+    if backup_resources_enabled:
+        backup_directory = Path(f"{database_name}_ressources")
+        resources_to_backup = {
+            "oauth": oauth_list,
+            "identity": identity_list,
+            "project": project_list,
+            "service_account": service_account_list,
+            "security_context_constraints": security_context_constraints_list,
+            "role": role_list,
+            "cluster_role": clusterrole_list,
+            "user": user_list,
+            "group": group_list,
+            "role_binding": role_binding_list,
+            "cluster_role_binding": cluster_role_binding_list,
+            "route": route_list,
+            "pod": pod_list,
+            "configmap": configmap_list,
+            "validating_webhook_configuration": validating_webhook_configuration_list,
+            "mutating_webhook_configuration": mutating_webhook_configuration_list,
+            "cluster_policy": cluster_policy_list,
+        }
+        backup_resource_data(backup_directory, resources_to_backup, kyverno_logs)
 
     run_collectors(
         graph=graph,
