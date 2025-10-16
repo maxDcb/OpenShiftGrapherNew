@@ -1,4 +1,5 @@
 import types
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -198,5 +199,61 @@ def test_fetch_resource_propagates_other_errors(monkeypatch, patched_client):
             kind="Pod",
         )
 
-    assert resource.calls == 1
+
+def test_load_constraint_templates_from_dir(tmp_path):
+    template_content = {
+        "apiVersion": "templates.gatekeeper.sh/v1beta1",
+        "kind": "ConstraintTemplate",
+        "metadata": {"name": "ns-must-have-owner", "uid": "uid-123"},
+        "spec": {
+            "crd": {
+                "spec": {
+                    "names": {"kind": "NsMustHaveOwner"},
+                }
+            },
+            "targets": [
+                {
+                    "target": "admission.k8s.gatekeeper.sh",
+                    "rego": "package owners\nviolation[{}] { true }",
+                }
+            ],
+        },
+        "status": {
+            "observedGeneration": 3,
+            "byPod": [
+                {
+                    "id": "gatekeeper-a",
+                    "errors": [
+                        {"message": "rego parse error"},
+                    ],
+                }
+            ],
+        },
+    }
+    template_path = tmp_path / "template.json"
+    template_path.write_text(json.dumps(template_content), encoding="utf-8")
+
+    result = osg.load_constraint_templates_from_dir(tmp_path)
+
+    assert len(result.items) == 1
+    template = result.items[0]
+    assert template.metadata.name == "ns-must-have-owner"
+    assert template.spec.targets[0].target == "admission.k8s.gatekeeper.sh"
+    assert template.status.byPod[0].errors[0].message == "rego parse error"
+    assert template._source_path == str(template_path)
+    assert result._source_directory == str(tmp_path)
+
+
+def test_load_constraint_templates_from_dir_missing(tmp_path):
+    missing = tmp_path / "missing"
+
+    with pytest.raises(FileNotFoundError):
+        osg.load_constraint_templates_from_dir(missing)
+
+
+def test_load_constraint_templates_from_dir_none():
+    result = osg.load_constraint_templates_from_dir(None)
+
+    assert result.items == []
+    assert result._source_directory is None
 

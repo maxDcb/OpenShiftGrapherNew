@@ -82,6 +82,7 @@ def test_collector_context_exposes_lookup_tables():
         pod_list=None,
         kyverno_logs=None,
         configmap_list=None,
+        constraintTemplate_list=None,
         validatingWebhookConfiguration_list=None,
         mutatingWebhookConfiguration_list=None,
         clusterPolicy_list=None,

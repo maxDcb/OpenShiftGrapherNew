@@ -24,6 +24,7 @@ SECTION_HEADERS = {
     "pod": "#### Pod ####",
     "configmap": "#### ConfigMap ####",
     "kyverno": "#### Kyverno ####",
+    "constraint_template": "#### ConstraintTemplate ####",
     "validating_webhook_configuration": "#### ValidatingWebhookConfiguration ####",
     "mutating_webhook_configuration": "#### MutatingWebhookConfiguration ####",
     "cluster_policy": "#### ClusterPolicy ####",
@@ -89,6 +90,7 @@ class CollectorContext:
     pod_list: object
     kyverno_logs: object
     configmap_list: object
+    constraintTemplate_list: object
     validatingWebhookConfiguration_list: object
     mutatingWebhookConfiguration_list: object
     clusterPolicy_list: object
@@ -221,6 +223,7 @@ def run_collectors(
     pod_list,
     kyverno_logs,
     configmap_list,
+    constraintTemplate_list,
     validatingWebhookConfiguration_list,
     mutatingWebhookConfiguration_list,
     clusterPolicy_list,
@@ -256,6 +259,7 @@ def run_collectors(
         pod_list=pod_list,
         kyverno_logs=kyverno_logs,
         configmap_list=configmap_list,
+        constraintTemplate_list=constraintTemplate_list,
         validatingWebhookConfiguration_list=validatingWebhookConfiguration_list,
         mutatingWebhookConfiguration_list=mutatingWebhookConfiguration_list,
         clusterPolicy_list=clusterPolicy_list,
@@ -276,6 +280,7 @@ def run_collectors(
     _collect_route(context)
     _collect_pod(context)
     _collect_configmap(context)
+    _collect_constrainttemplate(context)
     _collect_kyverno(context)
     _collect_validatingwebhookconfiguration(context)
     _collect_mutatingwebhookconfiguration(context)
@@ -2485,6 +2490,159 @@ def _collect_configmap(ctx):
                         graph.commit(tx)
 
                     except Exception as e: 
+                        if release:
+                            print(e)
+                            pass
+                        else:
+                            exc_type, exc_obj, exc_tb = sys.exc_info()
+                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                            print(exc_type, fname, exc_tb.tb_lineno)
+                            print("Error:", e)
+                            sys.exit(1)
+
+
+def _collect_constrainttemplate(ctx):
+    """Collect ConstraintTemplate resources from local JSON files."""
+
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    constraintTemplate_list = ctx.constraintTemplate_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
+    ##
+    ## ConstraintTemplate
+    ##
+    print(SECTION_HEADERS["constraint_template"])
+
+    if _should_collect(collector, "constrainttemplate", "constrainttemplates"):
+        items = getattr(constraintTemplate_list, "items", []) or []
+        source_directory = getattr(constraintTemplate_list, "_source_directory", None)
+        if source_directory is None:
+            print("ℹ️ ConstraintTemplate directory not configured; skipping.")
+            return
+        if not items:
+            print(f"ℹ️ No ConstraintTemplates found in directory '{source_directory}'.")
+            return
+
+        existing_count = graph.nodes.match("ConstraintTemplate").count()
+        if existing_count >= len(items):
+            print(
+                "⚠️ Database already has "
+                f"{existing_count} ConstraintTemplate nodes, skipping import."
+            )
+        else:
+            with Bar('ConstraintTemplate', max=len(items)) as bar:
+                for enum in items:
+                    bar.next()
+
+                    metadata = getattr(enum, "metadata", None)
+                    name = getattr(metadata, "name", None)
+                    if not name:
+                        continue
+
+                    uid = getattr(metadata, "uid", name)
+                    spec = getattr(enum, "spec", None)
+                    crd = getattr(spec, "crd", None)
+                    crd_spec = getattr(crd, "spec", None)
+                    crd_names = getattr(crd_spec, "names", None)
+                    kind = getattr(crd_names, "kind", None)
+
+                    targets = getattr(spec, "targets", []) or []
+                    target_names = []
+                    packages = []
+                    rego_missing = False
+                    for target in targets:
+                        target_name = getattr(target, "target", None)
+                        if target_name:
+                            target_names.append(target_name)
+                        rego = getattr(target, "rego", None)
+                        if not rego:
+                            rego_missing = True
+                        else:
+                            for line in str(rego).splitlines():
+                                stripped = line.strip()
+                                if stripped.startswith("package "):
+                                    packages.append(stripped.split(None, 1)[1] if " " in stripped else stripped[8:])
+                                    break
+
+                    status = getattr(enum, "status", None)
+                    observed_generation = getattr(status, "observedGeneration", None)
+                    error_messages = []
+                    for pod_status in getattr(status, "byPod", []) or []:
+                        for error in getattr(pod_status, "errors", []) or []:
+                            if isinstance(error, str):
+                                message = error
+                            else:
+                                message = getattr(error, "message", None) or getattr(error, "detail", None) or str(error)
+                            if message:
+                                error_messages.append(message)
+
+                    risk_tags = []
+                    if not targets:
+                        risk_tags.append("⚠️ no targets defined")
+                    if rego_missing:
+                        risk_tags.append("⚠️ missing Rego policy")
+                    if error_messages:
+                        risk_tags.append("⚠️ template has errors")
+
+                    constraintTemplateNode = Node(
+                        "ConstraintTemplate",
+                        name=name,
+                        uid=uid,
+                        kind=kind,
+                        targets=", ".join(target_names),
+                        packages=", ".join(packages),
+                        source=getattr(enum, "_source_path", None),
+                        observedGeneration=observed_generation,
+                        errorCount=len(error_messages),
+                        risk=format_risk_tags(risk_tags),
+                    )
+                    constraintTemplateNode.__primarylabel__ = "ConstraintTemplate"
+                    constraintTemplateNode.__primarykey__ = "uid"
+
+                    try:
+                        tx = graph.begin()
+                        tx.merge(constraintTemplateNode)
+
+                        for index, message in enumerate(error_messages, start=1):
+                            errorNode = Node(
+                                "ConstraintTemplateError",
+                                uid=f"{uid}:{index}",
+                                message=message,
+                            )
+                            errorNode.__primarylabel__ = "ConstraintTemplateError"
+                            errorNode.__primarykey__ = "uid"
+                            tx.merge(errorNode)
+                            relation = Relationship(constraintTemplateNode, "HAS_ERROR", errorNode)
+                            tx.merge(relation)
+
+                        graph.commit(tx)
+
+                    except Exception as e:
                         if release:
                             print(e)
                             pass

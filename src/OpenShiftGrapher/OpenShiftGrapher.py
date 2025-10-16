@@ -4,6 +4,7 @@ import argparse
 import json
 from argparse import RawTextHelpFormatter
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Sequence
 
 import urllib3
@@ -44,6 +45,7 @@ FETCH_MESSAGES = {
     "route": "Fetching Routes",
     "pod": "Fetching Pods",
     "configmap": "Fetching ConfigMaps",
+    "constraint_template": "Loading ConstraintTemplates from directory",
     "validating_webhook_configuration": "Fetching ValidatingWebhookConfigurations",
     "mutating_webhook_configuration": "Fetching MutatingWebhookConfiguration",
     "cluster_policy": "Fetching ClusterPolicy",
@@ -114,7 +116,62 @@ def _json_default(obj: Any) -> Any:
         return obj.to_dict()
     if isinstance(obj, set):
         return sorted(obj)
+    if isinstance(obj, SimpleNamespace):
+        return {key: _json_default(value) for key, value in vars(obj).items()}
     return str(obj)
+
+
+def _to_namespace(obj: Any) -> Any:
+    """Recursively convert *obj* into ``SimpleNamespace`` instances."""
+
+    if isinstance(obj, dict):
+        return SimpleNamespace(**{key: _to_namespace(value) for key, value in obj.items()})
+    if isinstance(obj, list):
+        return [_to_namespace(item) for item in obj]
+    return obj
+
+
+def _namespace_to_dict(obj: Any) -> Any:
+    """Convert ``SimpleNamespace`` hierarchies back into plain Python objects."""
+
+    if isinstance(obj, SimpleNamespace):
+        return {key: _namespace_to_dict(value) for key, value in vars(obj).items()}
+    if isinstance(obj, list):
+        return [_namespace_to_dict(item) for item in obj]
+    if isinstance(obj, dict):
+        return {key: _namespace_to_dict(value) for key, value in obj.items()}
+    return obj
+
+
+def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespace:
+    """Load ConstraintTemplate JSON files from *directory*.
+
+    The return value mimics the Kubernetes client list object with an ``items`` attribute
+    so that it can be consumed by the existing collector logic.
+    """
+
+    if directory is None:
+        result = SimpleNamespace(items=[])
+        setattr(result, "_source_directory", None)
+        return result
+
+    if not directory.exists():
+        raise FileNotFoundError(f"ConstraintTemplates directory '{directory}' does not exist")
+
+    if not directory.is_dir():
+        raise NotADirectoryError(f"ConstraintTemplates path '{directory}' is not a directory")
+
+    constraint_templates = []
+    for file_path in sorted(directory.glob("*.json")):
+        with file_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        namespace_obj = _to_namespace(payload)
+        setattr(namespace_obj, "_source_path", str(file_path))
+        constraint_templates.append(namespace_obj)
+
+    result = SimpleNamespace(items=constraint_templates)
+    setattr(result, "_source_directory", str(directory))
+    return result
 
 
 def backup_resource_data(
@@ -130,7 +187,7 @@ def backup_resource_data(
         serialisable_content = (
             resource_content.to_dict()
             if hasattr(resource_content, "to_dict") and callable(resource_content.to_dict)
-            else resource_content
+            else _namespace_to_dict(resource_content)
         )
         with resource_path.open("w", encoding="utf-8") as resource_file:
             json.dump(serialisable_content, resource_file, indent=2, default=_json_default)
@@ -162,7 +219,7 @@ def main() -> None:
         default="all",
         help='list of collectors. Possible values: all, project, scc, securitycontextconstraints, sa, role, '
              'clusterrole, rolebinding, clusterrolebinding, route, pod, kyverno, '
-             'validatingwebhookconfiguration, mutatingwebhookconfiguration, clusterpolicies'
+             'constrainttemplate, validatingwebhookconfiguration, mutatingwebhookconfiguration, clusterpolicies'
     )
     parser.add_argument('-u', '--userNeo4j', default=DEFAULT_NEO4J_USER, help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default=DEFAULT_NEO4J_PASSWORD, help='neo4j database password.')
@@ -172,6 +229,12 @@ def main() -> None:
         '--backupResources',
         action='store_true',
         help='Backup fetched resources into files named after the database.',
+    )
+    parser.add_argument(
+        '--constraintTemplatesDir',
+        type=Path,
+        default=None,
+        help='Directory containing ConstraintTemplate JSON exports to import into the graph.',
     )
 
     args = parser.parse_args()
@@ -185,6 +248,7 @@ def main() -> None:
     proxy_url = args.proxyUrl
     database_name = args.databaseName
     backup_resources_enabled = args.backupResources
+    constraint_templates_dir = args.constraintTemplatesDir
 
     release = True
 
@@ -294,6 +358,13 @@ def main() -> None:
         dyn_client, api_key, host_api, proxy_url, 'v1', 'ConfigMap'
     )
 
+    print(FETCH_MESSAGES["constraint_template"])
+    try:
+        constraint_template_list = load_constraint_templates_from_dir(constraint_templates_dir)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        print(f"[-] {exc}")
+        raise SystemExit(1) from exc
+
     print(FETCH_MESSAGES["validating_webhook_configuration"])
     validating_webhook_configuration_list, dyn_client, api_key = fetch_resource_with_refresh(
         dyn_client, api_key, host_api, proxy_url, 'admissionregistration.k8s.io/v1', 'ValidatingWebhookConfiguration'
@@ -326,6 +397,7 @@ def main() -> None:
             "route": route_list,
             "pod": pod_list,
             "configmap": configmap_list,
+            "constraint_template": constraint_template_list,
             "validating_webhook_configuration": validating_webhook_configuration_list,
             "mutating_webhook_configuration": mutating_webhook_configuration_list,
             "cluster_policy": cluster_policy_list,
@@ -351,6 +423,7 @@ def main() -> None:
         pod_list=pod_list,
         kyverno_logs=kyverno_logs,
         configmap_list=configmap_list,
+        constraintTemplate_list=constraint_template_list,
         validatingWebhookConfiguration_list=validating_webhook_configuration_list,
         mutatingWebhookConfiguration_list=mutating_webhook_configuration_list,
         clusterPolicy_list=cluster_policy_list,
