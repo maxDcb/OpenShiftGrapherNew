@@ -84,6 +84,7 @@ def test_collector_context_exposes_lookup_tables():
         kyverno_logs=None,
         configmap_list=None,
         constraintTemplate_list=None,
+        k8sValuesPattern_list=None,
         validatingWebhookConfiguration_list=None,
         mutatingWebhookConfiguration_list=None,
         clusterPolicy_list=None,

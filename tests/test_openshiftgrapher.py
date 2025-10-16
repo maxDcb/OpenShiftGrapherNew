@@ -275,3 +275,74 @@ def test_load_constraint_templates_from_dir_none():
     assert result.items == []
     assert result._source_directory is None
 
+
+def test_load_k8svalues_patterns_from_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        osg,
+        "yaml",
+        types.SimpleNamespace(safe_load_all=lambda data: [json.loads(data)]),
+    )
+
+    pattern_content = {
+        "apiVersion": "constraints.gatekeeper.sh/v1beta1",
+        "kind": "K8sValuesPattern",
+        "metadata": {"name": "namespace-denied-name-pattern", "uid": "uid-456"},
+        "spec": {
+            "enforcementAction": "scoped",
+            "scopedEnforcementActions": [
+                {
+                    "action": "deny",
+                    "enforcementPoints": [
+                        {"name": "validation.gatekeeper.sh"},
+                        {"name": "gator.gatekeeper.sh"},
+                    ],
+                }
+            ],
+            "match": {
+                "kinds": [
+                    {
+                        "apiGroups": [""],
+                        "kinds": ["Namespace"],
+                    }
+                ]
+            },
+            "parameters": {
+                "violationDocumentation": {
+                    "linkToDocumentation": "https://test.com/",
+                },
+                "valuesPatterns": [
+                    {
+                        "parent": "metadata",
+                        "patterns": [
+                            {
+                                "field": "name",
+                                "deny": True,
+                                "globs": ["kube-*", "toto*"],
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+
+    pattern_path = tmp_path / "values-pattern.yaml"
+    pattern_path.write_text(json.dumps(pattern_content), encoding="utf-8")
+
+    result = osg.load_k8svalues_patterns_from_dir(tmp_path)
+
+    assert len(result.items) == 1
+    pattern = result.items[0]
+    assert pattern.metadata.name == "namespace-denied-name-pattern"
+    assert pattern.spec.enforcementAction == "scoped"
+    assert pattern.spec.parameters.valuesPatterns[0].patterns[0].globs[0] == "kube-*"
+    assert pattern._source_path == str(pattern_path)
+    assert result._source_directory == str(tmp_path)
+
+
+def test_load_k8svalues_patterns_from_dir_none():
+    result = osg.load_k8svalues_patterns_from_dir(None)
+
+    assert result.items == []
+    assert result._source_directory is None
+

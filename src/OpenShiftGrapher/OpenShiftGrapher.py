@@ -51,6 +51,7 @@ FETCH_MESSAGES = {
     "pod": "Fetching Pods",
     "configmap": "Fetching ConfigMaps",
     "constraint_template": "Loading ConstraintTemplates from directory",
+    "k8s_values_pattern": "Loading K8sValuesPatterns from directory",
     "validating_webhook_configuration": "Fetching ValidatingWebhookConfigurations",
     "mutating_webhook_configuration": "Fetching MutatingWebhookConfiguration",
     "cluster_policy": "Fetching ClusterPolicy",
@@ -148,12 +149,8 @@ def _namespace_to_dict(obj: Any) -> Any:
     return obj
 
 
-def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespace:
-    """Load ConstraintTemplate YAML (or JSON) files from *directory*.
-
-    The return value mimics the Kubernetes client list object with an ``items`` attribute
-    so that it can be consumed by the existing collector logic.
-    """
+def _load_resources_from_dir(directory: Path | None, label: str) -> SimpleNamespace:
+    """Load YAML (or JSON) files from *directory* and wrap them in namespaces."""
 
     if directory is None:
         result = SimpleNamespace(items=[])
@@ -161,12 +158,12 @@ def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespac
         return result
 
     if not directory.exists():
-        raise FileNotFoundError(f"ConstraintTemplates directory '{directory}' does not exist")
+        raise FileNotFoundError(f"{label} directory '{directory}' does not exist")
 
     if not directory.is_dir():
-        raise NotADirectoryError(f"ConstraintTemplates path '{directory}' is not a directory")
+        raise NotADirectoryError(f"{label} path '{directory}' is not a directory")
 
-    constraint_templates = []
+    resources = []
     file_candidates = sorted(
         set(directory.glob("*.yaml"))
         | set(directory.glob("*.yml"))
@@ -193,7 +190,7 @@ def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespac
                 documents = [json.loads(file_text)]
             except json.JSONDecodeError as exc:
                 raise ValueError(
-                    "ConstraintTemplate loader requires PyYAML to parse non-JSON files"
+                    f"{label} loader requires PyYAML to parse non-JSON files"
                     f" (failed on '{file_path.name}')"
                 ) from exc
 
@@ -210,11 +207,23 @@ def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespac
                     continue
                 namespace_obj = _to_namespace(payload)
                 setattr(namespace_obj, "_source_path", str(file_path))
-                constraint_templates.append(namespace_obj)
+                resources.append(namespace_obj)
 
-    result = SimpleNamespace(items=constraint_templates)
+    result = SimpleNamespace(items=resources)
     setattr(result, "_source_directory", str(directory))
     return result
+
+
+def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespace:
+    """Load ConstraintTemplate YAML (or JSON) files from *directory*."""
+
+    return _load_resources_from_dir(directory, "ConstraintTemplates")
+
+
+def load_k8svalues_patterns_from_dir(directory: Path | None) -> SimpleNamespace:
+    """Load K8sValuesPattern YAML (or JSON) files from *directory*."""
+
+    return _load_resources_from_dir(directory, "K8sValuesPatterns")
 
 
 def backup_resource_data(
@@ -262,7 +271,7 @@ def main() -> None:
         default="all",
         help='list of collectors. Possible values: all, project, scc, securitycontextconstraints, sa, role, '
              'clusterrole, rolebinding, clusterrolebinding, route, pod, kyverno, '
-             'constrainttemplate, validatingwebhookconfiguration, mutatingwebhookconfiguration, clusterpolicies'
+             'constrainttemplate, k8svaluespattern, validatingwebhookconfiguration, mutatingwebhookconfiguration, clusterpolicies'
     )
     parser.add_argument('-u', '--userNeo4j', default=DEFAULT_NEO4J_USER, help='neo4j database user.')
     parser.add_argument('-p', '--passwordNeo4j', default=DEFAULT_NEO4J_PASSWORD, help='neo4j database password.')
@@ -279,6 +288,12 @@ def main() -> None:
         default=None,
         help='Directory containing ConstraintTemplate YAML exports to import into the graph.',
     )
+    parser.add_argument(
+        '--k8sValuesPatternsDir',
+        type=Path,
+        default=None,
+        help='Directory containing K8sValuesPattern YAML exports to import into the graph.',
+    )
 
     args = parser.parse_args()
 
@@ -292,6 +307,7 @@ def main() -> None:
     database_name = args.databaseName
     backup_resources_enabled = args.backupResources
     constraint_templates_dir = args.constraintTemplatesDir
+    k8svalues_patterns_dir = args.k8sValuesPatternsDir
 
     release = True
 
@@ -408,6 +424,13 @@ def main() -> None:
         print(f"[-] {exc}")
         raise SystemExit(1) from exc
 
+    print(FETCH_MESSAGES["k8s_values_pattern"])
+    try:
+        k8svalues_pattern_list = load_k8svalues_patterns_from_dir(k8svalues_patterns_dir)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        print(f"[-] {exc}")
+        raise SystemExit(1) from exc
+
     print(FETCH_MESSAGES["validating_webhook_configuration"])
     validating_webhook_configuration_list, dyn_client, api_key = fetch_resource_with_refresh(
         dyn_client, api_key, host_api, proxy_url, 'admissionregistration.k8s.io/v1', 'ValidatingWebhookConfiguration'
@@ -441,6 +464,7 @@ def main() -> None:
             "pod": pod_list,
             "configmap": configmap_list,
             "constraint_template": constraint_template_list,
+            "k8s_values_pattern": k8svalues_pattern_list,
             "validating_webhook_configuration": validating_webhook_configuration_list,
             "mutating_webhook_configuration": mutating_webhook_configuration_list,
             "cluster_policy": cluster_policy_list,
@@ -467,6 +491,7 @@ def main() -> None:
         kyverno_logs=kyverno_logs,
         configmap_list=configmap_list,
         constraintTemplate_list=constraint_template_list,
+        k8sValuesPattern_list=k8svalues_pattern_list,
         validatingWebhookConfiguration_list=validating_webhook_configuration_list,
         mutatingWebhookConfiguration_list=mutating_webhook_configuration_list,
         clusterPolicy_list=cluster_policy_list,
