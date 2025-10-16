@@ -4,6 +4,7 @@ from OpenShiftGrapher.collectors import (
     CollectorContext,
     LookupTables,
     _build_lookup_tables,
+    _iterate_constrainttemplate_rego_sources,
     _should_collect,
 )
 
@@ -96,3 +97,36 @@ def test_collector_context_exposes_lookup_tables():
     assert context.clusterrole_by_name["cluster-role"] == "cluster-role"
     assert context.user_by_name["alice"] == "user"
     assert context.group_by_name["team"] == "group"
+
+
+def test_iterate_constrainttemplate_rego_sources_handles_code_blocks_and_libs():
+    target = SimpleNamespace(
+        rego=None,
+        code=[
+            SimpleNamespace(
+                engine="Rego",
+                source=SimpleNamespace(rego="package owners\nviolation[{}] { true }"),
+            ),
+            SimpleNamespace(
+                engine="not-rego",
+                source=SimpleNamespace(rego="package skip"),
+            ),
+            SimpleNamespace(
+                engine="rego",
+                rego="package secondary\nallow { true }",
+            ),
+        ],
+        libs=[
+            SimpleNamespace(
+                source=SimpleNamespace(rego="package lib.helpers\nallow { false }"),
+            )
+        ],
+    )
+
+    snippets = list(_iterate_constrainttemplate_rego_sources(target))
+
+    assert snippets == [
+        "package owners\nviolation[{}] { true }",
+        "package secondary\nallow { true }",
+        "package lib.helpers\nallow { false }",
+    ]

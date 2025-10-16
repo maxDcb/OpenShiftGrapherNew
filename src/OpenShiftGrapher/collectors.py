@@ -2501,6 +2501,49 @@ def _collect_configmap(ctx):
                             sys.exit(1)
 
 
+def _iterate_constrainttemplate_rego_sources(target):
+    """Yield Rego snippets from a ConstraintTemplate target entry."""
+
+    if not target:
+        return
+
+    direct_rego = getattr(target, "rego", None)
+    if direct_rego:
+        yield direct_rego
+
+    for code_entry in getattr(target, "code", []) or []:
+        if not code_entry:
+            continue
+
+        entry_rego = getattr(code_entry, "rego", None)
+        if entry_rego:
+            yield entry_rego
+            continue
+
+        engine = getattr(code_entry, "engine", None)
+        if engine and str(engine).lower() != "rego":
+            continue
+
+        source = getattr(code_entry, "source", None)
+        source_rego = getattr(source, "rego", None) if source else None
+        if source_rego:
+            yield source_rego
+
+    for library in getattr(target, "libs", []) or []:
+        if not library:
+            continue
+
+        library_rego = getattr(library, "rego", None)
+        if library_rego:
+            yield library_rego
+            continue
+
+        source = getattr(library, "source", None)
+        source_rego = getattr(source, "rego", None) if source else None
+        if source_rego:
+            yield source_rego
+
+
 def _collect_constrainttemplate(ctx):
     """Collect ConstraintTemplate resources from local JSON files."""
 
@@ -2574,20 +2617,26 @@ def _collect_constrainttemplate(ctx):
                     targets = getattr(spec, "targets", []) or []
                     target_names = []
                     packages = []
+                    packages_seen = set()
                     rego_missing = False
                     for target in targets:
                         target_name = getattr(target, "target", None)
                         if target_name:
                             target_names.append(target_name)
-                        rego = getattr(target, "rego", None)
-                        if not rego:
+
+                        rego_sources = list(_iterate_constrainttemplate_rego_sources(target))
+                        if not rego_sources:
                             rego_missing = True
                         else:
-                            for line in str(rego).splitlines():
-                                stripped = line.strip()
-                                if stripped.startswith("package "):
-                                    packages.append(stripped.split(None, 1)[1] if " " in stripped else stripped[8:])
-                                    break
+                            for rego in rego_sources:
+                                for line in str(rego).splitlines():
+                                    stripped = line.strip()
+                                    if stripped.startswith("package "):
+                                        package_name = stripped.split(None, 1)[1] if " " in stripped else stripped[8:]
+                                        if package_name not in packages_seen:
+                                            packages_seen.add(package_name)
+                                            packages.append(package_name)
+                                        break
 
                     status = getattr(enum, "status", None)
                     observed_generation = getattr(status, "observedGeneration", None)

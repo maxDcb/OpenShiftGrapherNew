@@ -220,7 +220,15 @@ def test_load_constraint_templates_from_dir(tmp_path, monkeypatch):
             "targets": [
                 {
                     "target": "admission.k8s.gatekeeper.sh",
-                    "rego": "package owners\nviolation[{}] { true }",
+                    "code": [
+                        {
+                            "engine": "Rego",
+                            "source": {
+                                "version": "v1",
+                                "rego": "package owners\nviolation[{}] { true }",
+                            },
+                        }
+                    ],
                 }
             ],
         },
@@ -245,6 +253,10 @@ def test_load_constraint_templates_from_dir(tmp_path, monkeypatch):
     template = result.items[0]
     assert template.metadata.name == "ns-must-have-owner"
     assert template.spec.targets[0].target == "admission.k8s.gatekeeper.sh"
+    assert (
+        template.spec.targets[0].code[0].source.rego
+        == "package owners\nviolation[{}] { true }"
+    )
     assert template.status.byPod[0].errors[0].message == "rego parse error"
     assert template._source_path == str(template_path)
     assert result._source_directory == str(tmp_path)
