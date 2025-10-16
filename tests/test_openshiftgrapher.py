@@ -200,7 +200,13 @@ def test_fetch_resource_propagates_other_errors(monkeypatch, patched_client):
         )
 
 
-def test_load_constraint_templates_from_dir(tmp_path):
+def test_load_constraint_templates_from_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        osg,
+        "yaml",
+        types.SimpleNamespace(safe_load_all=lambda data: [json.loads(data)]),
+    )
+
     template_content = {
         "apiVersion": "templates.gatekeeper.sh/v1beta1",
         "kind": "ConstraintTemplate",
@@ -230,7 +236,7 @@ def test_load_constraint_templates_from_dir(tmp_path):
             ],
         },
     }
-    template_path = tmp_path / "template.json"
+    template_path = tmp_path / "template.yaml"
     template_path.write_text(json.dumps(template_content), encoding="utf-8")
 
     result = osg.load_constraint_templates_from_dir(tmp_path)

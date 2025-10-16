@@ -13,6 +13,11 @@ from openshift.dynamic import DynamicClient
 from openshift.helper.userpassauth import OCPLoginConfiguration
 from py2neo import Graph
 
+try:  # pragma: no cover - optional dependency in production environments
+    import yaml
+except ImportError:  # pragma: no cover - exercised in tests via monkeypatch
+    yaml = None
+
 from .collectors import run_collectors
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -144,7 +149,7 @@ def _namespace_to_dict(obj: Any) -> Any:
 
 
 def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespace:
-    """Load ConstraintTemplate JSON files from *directory*.
+    """Load ConstraintTemplate YAML (or JSON) files from *directory*.
 
     The return value mimics the Kubernetes client list object with an ``items`` attribute
     so that it can be consumed by the existing collector logic.
@@ -162,12 +167,50 @@ def load_constraint_templates_from_dir(directory: Path | None) -> SimpleNamespac
         raise NotADirectoryError(f"ConstraintTemplates path '{directory}' is not a directory")
 
     constraint_templates = []
-    for file_path in sorted(directory.glob("*.json")):
+    file_candidates = sorted(
+        set(directory.glob("*.yaml"))
+        | set(directory.glob("*.yml"))
+        | set(directory.glob("*.json"))
+    )
+
+    for file_path in file_candidates:
         with file_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        namespace_obj = _to_namespace(payload)
-        setattr(namespace_obj, "_source_path", str(file_path))
-        constraint_templates.append(namespace_obj)
+            file_text = handle.read()
+
+        if not file_text.strip():
+            continue
+
+        documents: list[Any] = []
+        if yaml is not None:
+            loader = getattr(yaml, "safe_load_all", None)
+            if loader is None:
+                single_loader = getattr(yaml, "safe_load", None)
+                documents = [single_loader(file_text)] if single_loader else []
+            else:
+                documents = list(loader(file_text))
+        else:
+            try:
+                documents = [json.loads(file_text)]
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "ConstraintTemplate loader requires PyYAML to parse non-JSON files"
+                    f" (failed on '{file_path.name}')"
+                ) from exc
+
+        for document in documents:
+            if not document:
+                continue
+            if isinstance(document, list):
+                iterable = document
+            else:
+                iterable = [document]
+
+            for payload in iterable:
+                if not payload:
+                    continue
+                namespace_obj = _to_namespace(payload)
+                setattr(namespace_obj, "_source_path", str(file_path))
+                constraint_templates.append(namespace_obj)
 
     result = SimpleNamespace(items=constraint_templates)
     setattr(result, "_source_directory", str(directory))
@@ -234,7 +277,7 @@ def main() -> None:
         '--constraintTemplatesDir',
         type=Path,
         default=None,
-        help='Directory containing ConstraintTemplate JSON exports to import into the graph.',
+        help='Directory containing ConstraintTemplate YAML exports to import into the graph.',
     )
 
     args = parser.parse_args()
