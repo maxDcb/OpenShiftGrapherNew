@@ -3,7 +3,10 @@
 import os
 import re
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Iterable
 
 from py2neo import Node, Relationship
 from progress.bar import Bar
@@ -2568,6 +2571,54 @@ def _stringify_sequence(items, attr=None):
     return result
 
 
+def _namespace_to_plain(obj: Any) -> Any:
+    """Recursively convert ``SimpleNamespace`` hierarchies to plain Python types."""
+
+    if isinstance(obj, SimpleNamespace):
+        return {key: _namespace_to_plain(value) for key, value in vars(obj).items()}
+    if isinstance(obj, dict):
+        return {key: _namespace_to_plain(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_namespace_to_plain(item) for item in obj]
+    return obj
+
+
+def _collect_keyword_values(obj: Any, keywords: Iterable[str]) -> "OrderedDict[str, list[str]]":
+    """Extract ordered lists of string values whose keys mention *keywords*."""
+
+    plain = _namespace_to_plain(obj)
+    keywords_lower = tuple(keyword.lower() for keyword in keywords)
+    collected: "OrderedDict[str, list[str]]" = OrderedDict()
+
+    def _walk(value: Any, path: list[str]) -> None:
+        if isinstance(value, dict):
+            for key, sub_value in value.items():
+                _walk(sub_value, path + [key])
+            return
+
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _walk(item, path)
+            return
+
+        if not path:
+            return
+
+        key = path[-1]
+        key_lower = key.lower()
+        if not any(keyword in key_lower for keyword in keywords_lower):
+            return
+
+        text = str(value).strip()
+        if not text:
+            return
+
+        collected.setdefault(key, []).append(text)
+
+    _walk(plain, [])
+    return collected
+
+
 def _collect_constrainttemplate(ctx):
     """Collect ConstraintTemplate resources from local JSON files."""
 
@@ -2836,12 +2887,25 @@ def _collect_k8svaluespattern(ctx):
 
                 parameters = getattr(spec, "parameters", None)
                 violation_doc = None
+                excluded_props: OrderedDict[str, str] = OrderedDict()
                 if parameters:
                     violation_documentation = getattr(parameters, "violationDocumentation", None)
                     if violation_documentation:
                         violation_doc = (
                             getattr(violation_documentation, "linkToDocumentation", None)
                             or getattr(violation_documentation, "url", None)
+                        )
+
+                    additional_match = getattr(parameters, "additionalMatch", None)
+                    if additional_match:
+                        excluded_details = _collect_keyword_values(
+                            additional_match,
+                            ("exclude", "exclusion"),
+                        )
+                        excluded_props = OrderedDict(
+                            (key, ", ".join(values))
+                            for key, values in excluded_details.items()
+                            if values
                         )
 
                 values_patterns = getattr(parameters, "valuesPatterns", []) if parameters else []
@@ -2851,6 +2915,8 @@ def _collect_k8svaluespattern(ctx):
                 deny_count = 0
                 glob_count = 0
                 value_count = 0
+                protected_globs: set[str] = set()
+                protected_values: set[str] = set()
 
                 for values_entry in values_patterns or []:
                     if not values_entry:
@@ -2881,6 +2947,8 @@ def _collect_k8svaluespattern(ctx):
 
                         if deny:
                             deny_count += 1
+                            protected_globs.update(glob_values)
+                            protected_values.update(value_values)
                             if dotted_field not in deny_fields_seen:
                                 deny_fields_seen.add(dotted_field)
                                 denied_fields.append(dotted_field)
@@ -2899,10 +2967,34 @@ def _collect_k8svaluespattern(ctx):
                     risk_tags.append(
                         f"🚫 {deny_count} deny pattern{'s' if deny_count != 1 else ''}"
                     )
+                if not match_kinds:
+                    risk_tags.append("⚠️ match scope unspecified")
                 if not pattern_summaries:
                     risk_tags.append("⚠️ no value patterns defined")
                 if not violation_doc:
                     risk_tags.append("⚠️ missing documentation link")
+
+                excluded_summary = (
+                    "; ".join(
+                        f"{key}: {value}" for key, value in excluded_props.items()
+                    )
+                    or None
+                )
+                cluster_exclusions_name = excluded_props.get("clusterExclusionsName")
+                excluded_accounts_str = excluded_props.get("excludedAccounts")
+                excluded_cluster_roles_str = excluded_props.get("excludedClusterRoles")
+                excluded_namespaces_str = excluded_props.get("excludedNamespaces")
+
+                protected_globs_list = sorted(protected_globs)
+                protected_values_list = sorted(protected_values)
+                protected_globs_str = ", ".join(protected_globs_list) or None
+                protected_values_str = ", ".join(protected_values_list) or None
+                protected_summary_parts = []
+                if protected_globs_str:
+                    protected_summary_parts.append(f"globs: {protected_globs_str}")
+                if protected_values_str:
+                    protected_summary_parts.append(f"values: {protected_values_str}")
+                protected_summary = "; ".join(protected_summary_parts) or None
 
                 values_pattern_node = Node(
                     "K8sValuesPattern",
@@ -2911,6 +3003,14 @@ def _collect_k8svaluespattern(ctx):
                     enforcementAction=enforcement_action,
                     scopedActions=", ".join(scoped_actions),
                     matchKinds=", ".join(match_kinds),
+                    excludedSummary=excluded_summary,
+                    excludedAccounts=excluded_accounts_str,
+                    excludedClusterRoles=excluded_cluster_roles_str,
+                    excludedNamespaces=excluded_namespaces_str,
+                    clusterExclusionsName=cluster_exclusions_name,
+                    protectedGlobs=protected_globs_str,
+                    protectedValues=protected_values_str,
+                    protectedSummary=protected_summary,
                     documentation=violation_doc,
                     denyCount=deny_count,
                     deniedFields=", ".join(denied_fields),
