@@ -3,7 +3,10 @@
 import os
 import re
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Iterable
 
 from py2neo import Node, Relationship
 from progress.bar import Bar
@@ -24,6 +27,8 @@ SECTION_HEADERS = {
     "pod": "#### Pod ####",
     "configmap": "#### ConfigMap ####",
     "kyverno": "#### Kyverno ####",
+    "constraint_template": "#### ConstraintTemplate ####",
+    "k8s_values_pattern": "#### K8sValuesPattern ####",
     "validating_webhook_configuration": "#### ValidatingWebhookConfiguration ####",
     "mutating_webhook_configuration": "#### MutatingWebhookConfiguration ####",
     "cluster_policy": "#### ClusterPolicy ####",
@@ -89,6 +94,8 @@ class CollectorContext:
     pod_list: object
     kyverno_logs: object
     configmap_list: object
+    constraintTemplate_list: object
+    k8sValuesPattern_list: object
     validatingWebhookConfiguration_list: object
     mutatingWebhookConfiguration_list: object
     clusterPolicy_list: object
@@ -221,6 +228,8 @@ def run_collectors(
     pod_list,
     kyverno_logs,
     configmap_list,
+    constraintTemplate_list,
+    k8sValuesPattern_list,
     validatingWebhookConfiguration_list,
     mutatingWebhookConfiguration_list,
     clusterPolicy_list,
@@ -256,6 +265,8 @@ def run_collectors(
         pod_list=pod_list,
         kyverno_logs=kyverno_logs,
         configmap_list=configmap_list,
+        constraintTemplate_list=constraintTemplate_list,
+        k8sValuesPattern_list=k8sValuesPattern_list,
         validatingWebhookConfiguration_list=validatingWebhookConfiguration_list,
         mutatingWebhookConfiguration_list=mutatingWebhookConfiguration_list,
         clusterPolicy_list=clusterPolicy_list,
@@ -276,6 +287,8 @@ def run_collectors(
     _collect_route(context)
     _collect_pod(context)
     _collect_configmap(context)
+    _collect_constrainttemplate(context)
+    _collect_k8svaluespattern(context)
     _collect_kyverno(context)
     _collect_validatingwebhookconfiguration(context)
     _collect_mutatingwebhookconfiguration(context)
@@ -2495,6 +2508,535 @@ def _collect_configmap(ctx):
                             print("Error:", e)
                             sys.exit(1)
 
+
+def _iterate_constrainttemplate_rego_sources(target):
+    """Yield Rego snippets from a ConstraintTemplate target entry."""
+
+    if not target:
+        return
+
+    direct_rego = getattr(target, "rego", None)
+    if direct_rego:
+        yield direct_rego
+
+    for code_entry in getattr(target, "code", []) or []:
+        if not code_entry:
+            continue
+
+        entry_rego = getattr(code_entry, "rego", None)
+        if entry_rego:
+            yield entry_rego
+            continue
+
+        engine = getattr(code_entry, "engine", None)
+        if engine and str(engine).lower() != "rego":
+            continue
+
+        source = getattr(code_entry, "source", None)
+        source_rego = getattr(source, "rego", None) if source else None
+        if source_rego:
+            yield source_rego
+
+    for library in getattr(target, "libs", []) or []:
+        if not library:
+            continue
+
+        library_rego = getattr(library, "rego", None)
+        if library_rego:
+            yield library_rego
+            continue
+
+        source = getattr(library, "source", None)
+        source_rego = getattr(source, "rego", None) if source else None
+        if source_rego:
+            yield source_rego
+
+
+def _stringify_sequence(items, attr=None):
+    """Return a cleaned-up list of strings extracted from *items*."""
+
+    result = []
+    for item in items or []:
+        if item is None:
+            continue
+        value = getattr(item, attr, None) if attr else None
+        if value is None:
+            if isinstance(item, str):
+                value = item
+            else:
+                value = str(item)
+        text = str(value).strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _namespace_to_plain(obj: Any) -> Any:
+    """Recursively convert ``SimpleNamespace`` hierarchies to plain Python types."""
+
+    if isinstance(obj, SimpleNamespace):
+        return {key: _namespace_to_plain(value) for key, value in vars(obj).items()}
+    if isinstance(obj, dict):
+        return {key: _namespace_to_plain(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_namespace_to_plain(item) for item in obj]
+    return obj
+
+
+def _collect_keyword_values(obj: Any, keywords: Iterable[str]) -> "OrderedDict[str, list[str]]":
+    """Extract ordered lists of string values whose keys mention *keywords*."""
+
+    plain = _namespace_to_plain(obj)
+    keywords_lower = tuple(keyword.lower() for keyword in keywords)
+    collected: "OrderedDict[str, list[str]]" = OrderedDict()
+
+    def _walk(value: Any, path: list[str]) -> None:
+        if isinstance(value, dict):
+            for key, sub_value in value.items():
+                _walk(sub_value, path + [key])
+            return
+
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _walk(item, path)
+            return
+
+        if not path:
+            return
+
+        key = path[-1]
+        key_lower = key.lower()
+        if not any(keyword in key_lower for keyword in keywords_lower):
+            return
+
+        text = str(value).strip()
+        if not text:
+            return
+
+        collected.setdefault(key, []).append(text)
+
+    _walk(plain, [])
+    return collected
+
+
+def _collect_constrainttemplate(ctx):
+    """Collect ConstraintTemplate resources from local JSON files."""
+
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    constraintTemplate_list = ctx.constraintTemplate_list
+    k8sValuesPattern_list = ctx.k8sValuesPattern_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
+    ##
+    ## ConstraintTemplate
+    ##
+    print(SECTION_HEADERS["constraint_template"])
+
+    if _should_collect(collector, "constrainttemplate", "constrainttemplates"):
+        items = getattr(constraintTemplate_list, "items", []) or []
+        source_directory = getattr(constraintTemplate_list, "_source_directory", None)
+        if source_directory is None:
+            print("ℹ️ ConstraintTemplate directory not configured; skipping.")
+            return
+        if not items:
+            print(f"ℹ️ No ConstraintTemplates found in directory '{source_directory}'.")
+            return
+
+        existing_count = graph.nodes.match("ConstraintTemplate").count()
+        if existing_count >= len(items):
+            print(
+                "⚠️ Database already has "
+                f"{existing_count} ConstraintTemplate nodes, skipping import."
+            )
+        else:
+            with Bar('ConstraintTemplate', max=len(items)) as bar:
+                for enum in items:
+                    bar.next()
+
+                    metadata = getattr(enum, "metadata", None)
+                    name = getattr(metadata, "name", None)
+                    if not name:
+                        continue
+
+                    uid = getattr(metadata, "uid", name)
+                    spec = getattr(enum, "spec", None)
+                    crd = getattr(spec, "crd", None)
+                    crd_spec = getattr(crd, "spec", None)
+                    crd_names = getattr(crd_spec, "names", None)
+                    kind = getattr(crd_names, "kind", None)
+
+                    targets = getattr(spec, "targets", []) or []
+                    target_names = []
+                    packages = []
+                    packages_seen = set()
+                    rego_missing = False
+                    for target in targets:
+                        target_name = getattr(target, "target", None)
+                        if target_name:
+                            target_names.append(target_name)
+
+                        rego_sources = list(_iterate_constrainttemplate_rego_sources(target))
+                        if not rego_sources:
+                            rego_missing = True
+                        else:
+                            for rego in rego_sources:
+                                for line in str(rego).splitlines():
+                                    stripped = line.strip()
+                                    if stripped.startswith("package "):
+                                        package_name = stripped.split(None, 1)[1] if " " in stripped else stripped[8:]
+                                        if package_name not in packages_seen:
+                                            packages_seen.add(package_name)
+                                            packages.append(package_name)
+                                        break
+
+                    status = getattr(enum, "status", None)
+                    observed_generation = getattr(status, "observedGeneration", None)
+                    error_messages = []
+                    for pod_status in getattr(status, "byPod", []) or []:
+                        for error in getattr(pod_status, "errors", []) or []:
+                            if isinstance(error, str):
+                                message = error
+                            else:
+                                message = getattr(error, "message", None) or getattr(error, "detail", None) or str(error)
+                            if message:
+                                error_messages.append(message)
+
+                    risk_tags = []
+                    if not targets:
+                        risk_tags.append("⚠️ no targets defined")
+                    if rego_missing:
+                        risk_tags.append("⚠️ missing Rego policy")
+                    if error_messages:
+                        risk_tags.append("⚠️ template has errors")
+
+                    constraintTemplateNode = Node(
+                        "ConstraintTemplate",
+                        name=name,
+                        uid=uid,
+                        kind=kind,
+                        targets=", ".join(target_names),
+                        packages=", ".join(packages),
+                        source=getattr(enum, "_source_path", None),
+                        observedGeneration=observed_generation,
+                        errorCount=len(error_messages),
+                        risk=format_risk_tags(risk_tags),
+                    )
+                    constraintTemplateNode.__primarylabel__ = "ConstraintTemplate"
+                    constraintTemplateNode.__primarykey__ = "uid"
+
+                    try:
+                        tx = graph.begin()
+                        tx.merge(constraintTemplateNode)
+
+                        for index, message in enumerate(error_messages, start=1):
+                            errorNode = Node(
+                                "ConstraintTemplateError",
+                                uid=f"{uid}:{index}",
+                                message=message,
+                            )
+                            errorNode.__primarylabel__ = "ConstraintTemplateError"
+                            errorNode.__primarykey__ = "uid"
+                            tx.merge(errorNode)
+                            relation = Relationship(constraintTemplateNode, "HAS_ERROR", errorNode)
+                            tx.merge(relation)
+
+                        graph.commit(tx)
+
+                    except Exception as e:
+                        if release:
+                            print(e)
+                            pass
+                        else:
+                            exc_type, exc_obj, exc_tb = sys.exc_info()
+                            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                            print(exc_type, fname, exc_tb.tb_lineno)
+                            print("Error:", e)
+                            sys.exit(1)
+
+
+def _collect_k8svaluespattern(ctx):
+    """Collect K8sValuesPattern resources from local files."""
+
+    collector = ctx.collector
+    graph = ctx.graph
+    release = ctx.release
+    oauth_list = ctx.oauth_list
+    identity_list = ctx.identity_list
+    project_list = ctx.project_list
+    serviceAccount_list = ctx.serviceAccount_list
+    security_context_constraints_list = ctx.security_context_constraints_list
+    role_list = ctx.role_list
+    clusterrole_list = ctx.clusterrole_list
+    user_list = ctx.user_list
+    group_list = ctx.group_list
+    roleBinding_list = ctx.roleBinding_list
+    clusterRoleBinding_list = ctx.clusterRoleBinding_list
+    route_list = ctx.route_list
+    pod_list = ctx.pod_list
+    kyverno_logs = ctx.kyverno_logs
+    configmap_list = ctx.configmap_list
+    constraintTemplate_list = ctx.constraintTemplate_list
+    k8sValuesPattern_list = ctx.k8sValuesPattern_list
+    validatingWebhookConfiguration_list = ctx.validatingWebhookConfiguration_list
+    mutatingWebhookConfiguration_list = ctx.mutatingWebhookConfiguration_list
+    clusterPolicy_list = ctx.clusterPolicy_list
+    project_by_name = ctx.project_by_name
+    serviceaccount_by_ns_name = ctx.serviceaccount_by_ns_name
+    security_context_constraints_by_name = ctx.security_context_constraints_by_name
+    role_by_ns_name = ctx.role_by_ns_name
+    clusterrole_by_name = ctx.clusterrole_by_name
+    user_by_name = ctx.user_by_name
+    group_by_name = ctx.group_by_name
+    ##
+    ## K8sValuesPattern
+    ##
+    print(SECTION_HEADERS["k8s_values_pattern"])
+
+    if _should_collect(
+        collector,
+        "k8svaluespattern",
+        "k8svaluespatterns",
+        "valuespattern",
+        "valuespatterns",
+    ):
+        items = getattr(k8sValuesPattern_list, "items", []) or []
+        source_directory = getattr(k8sValuesPattern_list, "_source_directory", None)
+        if source_directory is None:
+            print("ℹ️ K8sValuesPattern directory not configured; skipping.")
+            return
+        if not items:
+            print(f"ℹ️ No K8sValuesPatterns found in directory '{source_directory}'.")
+            return
+
+        existing_count = graph.nodes.match("K8sValuesPattern").count()
+        if existing_count >= len(items):
+            print(
+                "⚠️ Database already has "
+                f"{existing_count} K8sValuesPattern nodes, skipping import."
+            )
+            return
+
+        with Bar('K8sValuesPattern', max=len(items)) as bar:
+            for enum in items:
+                bar.next()
+
+                metadata = getattr(enum, "metadata", None)
+                name = getattr(metadata, "name", None)
+                if not name:
+                    continue
+
+                uid = getattr(metadata, "uid", name)
+                spec = getattr(enum, "spec", None)
+                enforcement_action = getattr(spec, "enforcementAction", None)
+                scoped_actions_entries = getattr(spec, "scopedEnforcementActions", []) or []
+                scoped_actions = []
+                for scoped in scoped_actions_entries:
+                    if not scoped:
+                        continue
+                    action = getattr(scoped, "action", None)
+                    points = _stringify_sequence(getattr(scoped, "enforcementPoints", None), attr="name")
+                    if action and points:
+                        scoped_actions.append(f"{action} -> {', '.join(points)}")
+                    elif action:
+                        scoped_actions.append(str(action))
+                    elif points:
+                        scoped_actions.append(", ".join(points))
+
+                match = getattr(spec, "match", None)
+                match_kinds = []
+                seen_kinds = set()
+                for match_entry in getattr(match, "kinds", []) or []:
+                    if not match_entry:
+                        continue
+                    api_groups = getattr(match_entry, "apiGroups", []) or []
+                    kinds = getattr(match_entry, "kinds", []) or []
+                    if not kinds:
+                        continue
+                    display_groups = api_groups or [""]
+                    for group in display_groups:
+                        for kind in kinds:
+                            qualifier = f"{group}/{kind}" if group else kind
+                            if qualifier not in seen_kinds:
+                                seen_kinds.add(qualifier)
+                                match_kinds.append(qualifier)
+
+                parameters = getattr(spec, "parameters", None)
+                violation_doc = None
+                excluded_props: OrderedDict[str, str] = OrderedDict()
+                if parameters:
+                    violation_documentation = getattr(parameters, "violationDocumentation", None)
+                    if violation_documentation:
+                        violation_doc = (
+                            getattr(violation_documentation, "linkToDocumentation", None)
+                            or getattr(violation_documentation, "url", None)
+                        )
+
+                    additional_match = getattr(parameters, "additionalMatch", None)
+                    if additional_match:
+                        excluded_details = _collect_keyword_values(
+                            additional_match,
+                            ("exclude", "exclusion"),
+                        )
+                        excluded_props = OrderedDict(
+                            (key, ", ".join(values))
+                            for key, values in excluded_details.items()
+                            if values
+                        )
+
+                values_patterns = getattr(parameters, "valuesPatterns", []) if parameters else []
+                pattern_summaries = []
+                denied_fields = []
+                deny_fields_seen = set()
+                deny_count = 0
+                glob_count = 0
+                value_count = 0
+                protected_globs: set[str] = set()
+                protected_values: set[str] = set()
+
+                for values_entry in values_patterns or []:
+                    if not values_entry:
+                        continue
+                    parent = getattr(values_entry, "parent", None)
+                    patterns = getattr(values_entry, "patterns", []) or []
+                    for pattern in patterns:
+                        if not pattern:
+                            continue
+                        field = getattr(pattern, "field", None)
+                        deny = bool(getattr(pattern, "deny", False))
+                        allow = bool(getattr(pattern, "allow", False))
+                        glob_values = _stringify_sequence(getattr(pattern, "globs", []) or [])
+                        value_values = _stringify_sequence(getattr(pattern, "values", []) or [])
+                        message = getattr(pattern, "message", None)
+
+                        dotted_field = ".".join(filter(None, [parent, field])) or (field or parent or "<root>")
+                        rule_type = "deny" if deny else "allow" if allow else "match"
+                        summary_parts = []
+                        if glob_values:
+                            glob_count += len(glob_values)
+                            summary_parts.append("globs=" + "; ".join(glob_values))
+                        if value_values:
+                            value_count += len(value_values)
+                            summary_parts.append("values=" + "; ".join(value_values))
+                        if message:
+                            summary_parts.append(f"msg={message}")
+
+                        if deny:
+                            deny_count += 1
+                            protected_globs.update(glob_values)
+                            protected_values.update(value_values)
+                            if dotted_field not in deny_fields_seen:
+                                deny_fields_seen.add(dotted_field)
+                                denied_fields.append(dotted_field)
+
+                        summary = f"{dotted_field} {rule_type}"
+                        if summary_parts:
+                            summary += f" ({', '.join(summary_parts)})"
+                        pattern_summaries.append(summary)
+
+                risk_tags = []
+                if enforcement_action and str(enforcement_action).lower() != "deny":
+                    risk_tags.append(f"ℹ️ enforcementAction={enforcement_action}")
+                if scoped_actions:
+                    risk_tags.append("ℹ️ scoped enforcement actions")
+                if deny_count:
+                    risk_tags.append(
+                        f"🚫 {deny_count} deny pattern{'s' if deny_count != 1 else ''}"
+                    )
+                if not match_kinds:
+                    risk_tags.append("⚠️ match scope unspecified")
+                if not pattern_summaries:
+                    risk_tags.append("⚠️ no value patterns defined")
+                if not violation_doc:
+                    risk_tags.append("⚠️ missing documentation link")
+
+                excluded_summary = (
+                    "; ".join(
+                        f"{key}: {value}" for key, value in excluded_props.items()
+                    )
+                    or None
+                )
+                cluster_exclusions_name = excluded_props.get("clusterExclusionsName")
+                excluded_accounts_str = excluded_props.get("excludedAccounts")
+                excluded_cluster_roles_str = excluded_props.get("excludedClusterRoles")
+                excluded_namespaces_str = excluded_props.get("excludedNamespaces")
+
+                protected_globs_list = sorted(protected_globs)
+                protected_values_list = sorted(protected_values)
+                protected_globs_str = ", ".join(protected_globs_list) or None
+                protected_values_str = ", ".join(protected_values_list) or None
+                protected_summary_parts = []
+                if protected_globs_str:
+                    protected_summary_parts.append(f"globs: {protected_globs_str}")
+                if protected_values_str:
+                    protected_summary_parts.append(f"values: {protected_values_str}")
+                protected_summary = "; ".join(protected_summary_parts) or None
+
+                values_pattern_node = Node(
+                    "K8sValuesPattern",
+                    name=name,
+                    uid=uid,
+                    enforcementAction=enforcement_action,
+                    scopedActions=", ".join(scoped_actions),
+                    matchKinds=", ".join(match_kinds),
+                    excludedSummary=excluded_summary,
+                    excludedAccounts=excluded_accounts_str,
+                    excludedClusterRoles=excluded_cluster_roles_str,
+                    excludedNamespaces=excluded_namespaces_str,
+                    clusterExclusionsName=cluster_exclusions_name,
+                    protectedGlobs=protected_globs_str,
+                    protectedValues=protected_values_str,
+                    protectedSummary=protected_summary,
+                    documentation=violation_doc,
+                    denyCount=deny_count,
+                    deniedFields=", ".join(denied_fields),
+                    globCount=glob_count,
+                    valueCount=value_count,
+                    patternSummary="; ".join(pattern_summaries),
+                    source=getattr(enum, "_source_path", None),
+                    risk=format_risk_tags(risk_tags),
+                )
+                values_pattern_node.__primarylabel__ = "K8sValuesPattern"
+                values_pattern_node.__primarykey__ = "uid"
+
+                try:
+                    tx = graph.begin()
+                    tx.merge(values_pattern_node)
+                    graph.commit(tx)
+                except Exception as e:
+                    if release:
+                        print(e)
+                        pass
+                    else:
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                        print(exc_type, fname, exc_tb.tb_lineno)
+                        print("Error:", e)
+                        sys.exit(1)
 
 def _collect_kyverno(ctx):
     """Collect Kyverno resources."""
